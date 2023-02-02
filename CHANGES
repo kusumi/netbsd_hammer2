@@ -1,5 +1,9 @@
+v0.1.1
+======
+- README.md: Mention https://github.com/kusumi/makefs
+
 v0.1.0
 ======
 - Initial release
-- sbin/* userspace commands are implemented
+- sbin/* commands for read-only support are implemented
 - VFS_MOUNT() returns EOPNOTSUPP
