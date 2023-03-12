@@ -2,15 +2,15 @@
 *.html8
 .gdbinit
 
-src/sys/fs/hammer2/amd64
-src/sys/fs/hammer2/hammer2.kmod
-src/sys/fs/hammer2/hammer2.kmod.map
-src/sys/fs/hammer2/i386
-src/sys/fs/hammer2/machine
-src/sys/fs/hammer2/x86
-src/sys/fs/hammer2/xen
+/src/sys/fs/hammer2/amd64
+/src/sys/fs/hammer2/hammer2.kmod
+/src/sys/fs/hammer2/hammer2.kmod.map
+/src/sys/fs/hammer2/i386
+/src/sys/fs/hammer2/machine
+/src/sys/fs/hammer2/x86
+/src/sys/fs/hammer2/xen
 
-src/sbin/hammer2/hammer2
-src/sbin/newfs_hammer2/newfs_hammer2
-src/sbin/mount_hammer2/mount_hammer2
-src/sbin/fsck_hammer2/fsck_hammer2
+/src/sbin/hammer2/hammer2
+/src/sbin/newfs_hammer2/newfs_hammer2
+/src/sbin/mount_hammer2/mount_hammer2
+/src/sbin/fsck_hammer2/fsck_hammer2

@@ -10,3 +10,7 @@ clean:
 		$(MAKE) -C $$dir $@; \
 	done
 	find src/ -type f -name "*.html8" | xargs rm
+install:
+	sudo bash -x ./script/install.sh
+uninstall:
+	sudo bash -x ./script/uninstall.sh

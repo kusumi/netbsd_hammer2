@@ -216,7 +216,7 @@ hammer2_add_volume(const char *path, int rdonly)
 
 	if (fstat(fd, &st) == -1)
 		err(1, "fstat");
-	if (!S_ISCHR(st.st_mode) && !S_ISREG(st.st_mode))
+	if (!S_ISBLK(st.st_mode) && !S_ISREG(st.st_mode))
 		errx(1, "Unsupported file type");
 
 	if (hammer2_read_volume_header(fd, path, &voldata) >= 0) {

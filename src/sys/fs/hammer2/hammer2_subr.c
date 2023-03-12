@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2022 Tomohiro Kusumi <tkusumi@netbsd.org>
+ * Copyright (c) 2023 Tomohiro Kusumi <tkusumi@netbsd.org>
  * Copyright (c) 2011-2022 The DragonFly Project.  All rights reserved.
  *
  * This code is derived from software contributed to The DragonFly Project
@@ -129,9 +129,8 @@ hammer2_to_unix_xid(const struct uuid *uuid)
  * Also, the iscsi crc code is used instead of the old crc32 code.
  */
 hammer2_key_t
-hammer2_dirhash(const unsigned char *name, size_t len)
+hammer2_dirhash(const char *aname, size_t len)
 {
-	const unsigned char *aname = name;
 	uint32_t crcx;
 	uint64_t key;
 	size_t i, j;

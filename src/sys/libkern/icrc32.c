@@ -10,8 +10,6 @@
 
 uint32_t iscsi_crc32(const void *buf, size_t size);
 uint32_t iscsi_crc32_ext(const void *buf, size_t size, uint32_t ocrc);
-uint32_t calculate_crc32c(uint32_t crc32c, const unsigned char *buffer,
-			unsigned int length);
 
 /*
  *  First, the polynomial itself and its table of feedback terms.  The
@@ -754,7 +752,7 @@ multitable_crc32c(uint32_t crc32c,
  *
  * (It doesn't say, but this *IS* the iscsi 32-bit CRC poly)
  */
-uint32_t
+static uint32_t
 calculate_crc32c(uint32_t crc32c,
     const unsigned char *buffer,
     unsigned int length)

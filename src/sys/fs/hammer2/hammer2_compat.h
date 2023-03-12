@@ -5,7 +5,7 @@
  * Copyright (c) 2011-2022 The DragonFly Project.  All rights reserved.
  *
  * This code is derived from software contributed to The DragonFly Project
- * by Matthew Dillon <dillon@backplane.com>
+ * by Matthew Dillon <dillon@dragonflybsd.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -35,28 +35,67 @@
  * SUCH DAMAGE.
  */
 
-#ifndef _FS_HAMMER2_MOUNT_H_
-#define _FS_HAMMER2_MOUNT_H_
+#ifndef _FS_HAMMER2_COMPAT_H_
+#define _FS_HAMMER2_COMPAT_H_
 
-/* sys/sys/mount.h */
-#define MOUNT_HAMMER2	"hammer2"	/* HAMMER2 Filesystem */
+#include <sys/stdint.h>
+#include <sys/atomic.h>
 
-/*
- * This structure is passed from userland to the kernel during the mount
- * system call.
- *
- * The volume name is formatted as '/dev/ad0s1a@LABEL', where the label is
- * the mount point under the super-root.
- */
-struct hammer2_mount_info {
-	char		volume[MAXPATHLEN];
-	int		hflags;		/* extended hammer2 mount flags */
-	int		cluster_fd;	/* cluster management pipe/socket */
-	char		reserved1[112];
-};
+#include <machine/cpufunc.h>
 
-#define HMNT2_LOCAL		0x00000002
+/* Taken from sys/sys/cdefs.h in FreeBSD. */
+#ifndef __DECONST
+#define __DECONST(type, var)	((type)(__uintptr_t)(const void *)(var))
+#endif
 
-#define HMNT2_DEVFLAGS		(HMNT2_LOCAL)
+/* Emulate INVARIANTS in FreeBSD. */
+#if 1
+#define INVARIANTS	DIAGNOSTIC
+#define __debugvar	__diagused
+#else
+#define INVARIANTS	DEBUG
+#define __debugvar	__debugused
+#endif
 
-#endif /* !_FS_HAMMER2_MOUNT_H_ */
+/* DragonFly KKASSERT is NetBSD KASSERT equivalent. */
+#define KKASSERT	KASSERT
+
+#define atomic_cmpset_uint(ptr, old, new)	\
+	(atomic_cas_uint((ptr), (old), (new)) == (old))
+
+#define atomic_cmpset_32(ptr, old, new)	\
+	(atomic_cas_32((ptr), (old), (new)) == (old))
+
+/* XXX Not atomic, but harmless with current read-only support. */
+static __inline unsigned int
+atomic_fetchadd_uint(volatile unsigned int *p, unsigned int v)
+{
+	unsigned int value;
+
+	do {
+		value = *p;
+	} while (!atomic_cmpset_uint(p, value, value + v));
+	return (value);
+}
+
+static __inline uint32_t
+atomic_fetchadd_32(volatile uint32_t *p, uint32_t v)
+{
+	uint32_t value;
+
+	do {
+		value = *p;
+	} while (!atomic_cmpset_32(p, value, value + v));
+	return (value);
+}
+
+#define atomic_fetchadd_int	atomic_fetchadd_uint
+
+/* XXX NetBSD only has arch dependent function. */
+#if defined(__i386__) || defined(__x86_64__)
+#define cpu_spinwait	x86_pause
+#else
+#define cpu_spinwait	do {} while (0)
+#endif
+
+#endif /* !_FS_HAMMER2_COMPAT_H_ */

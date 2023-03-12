@@ -6,25 +6,21 @@ DIR=$1
 if [ "${DIR}" = "" ]; then
 	DIR=/usr/local
 fi
-if [ ! -d ${DIR} ]; then
-	echo "No such directory ${DIR}"
-	exit 1
-fi
-if [ ! -d ${DIR}/sbin ]; then
-	echo "No such directory ${DIR}/sbin"
-	exit 1
-fi
 
+[ -e /usr/bin/uname ] || exit 1
 [ -e /usr/bin/install ] || exit 1
-#[ -e /usr/sbin/kldxref ] || exit 1
 
-#[ ! -f /boot/modules/hammer2.ko ] || /bin/rm /boot/modules/hammer2.ko
-#/usr/sbin/kldxref /boot/modules/
+KMOD_DIR=/stand/`/usr/bin/uname -m`/`/usr/bin/uname -r`/modules
+[ -d ${KMOD_DIR} ] || exit 1
+
+[ ! -f ${KMOD_DIR}/hammer2/hammer2.kmod ] || /bin/rm ${KMOD_DIR}/hammer2/hammer2.kmod
+[ ! -d ${KMOD_DIR}/hammer2 ] || /bin/rmdir ${KMOD_DIR}/hammer2
 
 [ ! -f ${DIR}/sbin/hammer2 ] || /bin/rm ${DIR}/sbin/hammer2
 [ ! -f ${DIR}/sbin/newfs_hammer2 ] || /bin/rm ${DIR}/sbin/newfs_hammer2
 [ ! -f ${DIR}/sbin/mount_hammer2 ] || /bin/rm ${DIR}/sbin/mount_hammer2
 [ ! -f ${DIR}/sbin/fsck_hammer2 ] || /bin/rm ${DIR}/sbin/fsck_hammer2
+# XXX rmdir ${DIR}/sbin if empty
 
 [ ! -f ${DIR}/man/man8/hammer2.8 ] || /bin/rm ${DIR}/man/man8/hammer2.8
 [ ! -f ${DIR}/man/man8/hammer2.8.gz ] || /bin/rm ${DIR}/man/man8/hammer2.8.gz
@@ -34,5 +30,6 @@ fi
 [ ! -f ${DIR}/man/man8/mount_hammer2.8.gz ] || /bin/rm ${DIR}/man/man8/mount_hammer2.8.gz
 [ ! -f ${DIR}/man/man8/fsck_hammer2.8 ] || /bin/rm ${DIR}/man/man8/fsck_hammer2.8
 [ ! -f ${DIR}/man/man8/fsck_hammer2.8.gz ] || /bin/rm ${DIR}/man/man8/fsck_hammer2.8.gz
+# XXX rmdir ${DIR}/man/man8 if empty
 
 echo "uninstall success"

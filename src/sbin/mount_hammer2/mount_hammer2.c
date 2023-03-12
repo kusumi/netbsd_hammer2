@@ -55,6 +55,7 @@ static void usage(const char *ctl, ...);
 static struct mntopt mopts[] = {
 	MOPT_STDOPTS,
 	MOPT_UPDATE,
+	MOPT_GETARGS,
 	MOPT_NULL,
 };
 
@@ -62,7 +63,6 @@ static struct mntopt mopts[] = {
 int
 main(int argc, char **argv)
 {
-
 	setprogname(argv[0]);
 	return mount_hammer2(argc, argv);
 }
@@ -77,8 +77,8 @@ mount_hammer2_parseargs(int argc, char *argv[],
 	mntoptparse_t mp;
 
 	memset(args, 0, sizeof(*args));
-	*mntflags = MNT_RDONLY; /* currently write unsupported */
-	optind = optreset = 1;		/* Reset for parse of new argv. */
+	*mntflags = 0;
+	optind = optreset = 1; /* Reset for parse of new argv. */
 	while ((ch = getopt(argc, argv, "o:")) != -1)
 		switch (ch) {
 		case 'o':
@@ -100,10 +100,15 @@ mount_hammer2_parseargs(int argc, char *argv[],
 		/* not reached */
 	}
 
-	pathadj(argv[0], canon_dev);
+	/* If MNT_GETARGS is specified, it should be the only flag. */
+	if ((*mntflags & MNT_GETARGS) == 0)
+		*mntflags = MNT_RDONLY; /* currently write unsupported */
+
+	/* pathadj doesn't work with multi-volumes. */
+	strlcpy(canon_dev, argv[0], MAXPATHLEN);
 	pathadj(argv[1], canon_dir);
 
-	args->volume = canon_dev;
+	strlcpy(args->volume, canon_dev, sizeof(args->volume));
 	args->hflags = HMNT2_LOCAL; /* force local, not optional */
 
 	/* Automatically add @DATA if no label specified. */
@@ -114,7 +119,8 @@ mount_hammer2_parseargs(int argc, char *argv[],
 	}
 
 	/* Prefix if necessary. */
-	if (!strchr(canon_dev, ':') && canon_dev[0] != '/' && canon_dev[0] != '@') {
+	if (!strchr(canon_dev, ':') && canon_dev[0] != '/' &&
+	    canon_dev[0] != '@') {
 		char tmp[MAXPATHLEN - 10];
 		strlcpy(tmp, canon_dev, sizeof(tmp));
 		snprintf(canon_dev, MAXPATHLEN, "/dev/%s", tmp);
@@ -125,14 +131,15 @@ int
 mount_hammer2(int argc, char *argv[])
 {
 	struct hammer2_mount_info args;
-	char fs_name[MAXPATHLEN], canon_dev[MAXPATHLEN];
+	char canon_dev[MAXPATHLEN], canon_dir[MAXPATHLEN];
 	const char *errcause;
 	int mntflags;
 
-	mount_hammer2_parseargs(argc, argv, &args, &mntflags,
-	    canon_dev, fs_name);
+	mount_hammer2_parseargs(argc, argv, &args, &mntflags, canon_dev,
+	    canon_dir);
 
-	if (mount(MOUNT_HAMMER2, fs_name, mntflags, &args, sizeof args) == -1) {
+	if (mount(MOUNT_HAMMER2, canon_dir, mntflags, &args, sizeof(args))
+	    == -1) {
 		switch (errno) {
 		case EMFILE:
 			errcause = "mount table full";
@@ -148,7 +155,11 @@ mount_hammer2(int argc, char *argv[])
 			errcause = strerror(errno);
 			break;
 		}
-		errx(1, "%s on %s: %s", args.volume, fs_name, errcause);
+		errx(1, "%s on %s: %s", args.volume, canon_dir, errcause);
+	}
+	if (mntflags & MNT_GETARGS) {
+		printf("volume=%s, hflags=0x%x, cluster_fd=%d\n",
+		    args.volume, args.hflags, args.cluster_fd);
 	}
 
 	return (0);

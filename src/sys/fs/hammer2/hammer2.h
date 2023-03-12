@@ -67,31 +67,24 @@
 #include <sys/proc.h>
 #include <sys/queue.h>
 #include <sys/rwlock.h>
+#include <sys/condvar.h>
 #include <sys/tree.h>
 #include <sys/uuid.h>
 #include <sys/vnode.h>
-
 #include <sys/atomic.h>
 
+#include <miscfs/genfs/genfs_node.h>
+
+#include "hammer2_compat.h"
 #include "hammer2_disk.h"
 #include "hammer2_rb.h"
-
-/* KASSERT variant from DragonFly */
-#ifdef INVARIANTS
-#define KKASSERT(exp)	do { if (__predict_false(!(exp)))	  \
-				panic("assertion \"%s\" failed "  \
-				"in %s at %s:%u", #exp, __func__, \
-				__FILE__, __LINE__); } while (0)
-#else
-#define KKASSERT(exp)	do { } while (0)
-#endif
 
 /* printf(9) variants for HAMMER2 */
 #ifdef INVARIANTS
 #define HFMT	"%s(%s|%d): "
 #define HARGS	__func__, \
     curproc ? curproc->p_comm : "-", \
-    curthread ? curthread->td_tid : -1
+    curlwp ? curlwp->l_lid : -1
 #else
 #define HFMT	"%s: "
 #define HARGS	__func__
@@ -123,36 +116,29 @@ typedef union hammer2_xop hammer2_xop_t;
 /*
  * Mutex and lock shims.
  * Normal synchronous non-abortable locks can be substituted for spinlocks.
- * FreeBSD HAMMER2 currently uses sx(9) for both mtx and spinlock.
+ * NetBSD HAMMER2 currently uses rwlock(9) for both mtx and spinlock.
  */
 typedef krwlock_t hammer2_mtx_t;
 
 /* Zero on success. */
 #define hammer2_mtx_init(p, s)		rw_init(p)
-#define hammer2_mtx_init_recurse(p, s)	rw_init(p) // recurse ?
 #define hammer2_mtx_ex(p)		rw_enter(p, RW_WRITER)
 #define hammer2_mtx_ex_try(p)		(!rw_tryenter(p, RW_WRITER))
 #define hammer2_mtx_sh(p)		rw_enter(p, RW_READER)
 #define hammer2_mtx_sh_try(p)		(!rw_tryenter(p, RW_READER))
 #define hammer2_mtx_unlock(p)		rw_exit(p)
 #define hammer2_mtx_destroy(p)		rw_destroy(p)
-// use condvar(9) ?
-//#define hammer2_mtx_sleep(c, p, s)	sx_sleep(c, p, 0, s, 0)
-//#define hammer2_mtx_wakeup(c)		wakeup(c)
 
-/* sx_try_upgrade panics on INVARIANTS if already exclusively locked. */
+/* rw_tryupgrade panics on DIAGNOSTIC if already exclusively locked. */
 #define hammer2_mtx_upgrade_try(p)	(!rw_tryupgrade(p))
 
 /* Non-zero if exclusively locked by the calling thread. */
-// use rw_*_held(9) ?
-//#define hammer2_mtx_owned(p)		sx_xlocked(p)
+#define hammer2_mtx_owned(p)		rw_write_held(p)
 
-/*
-#define hammer2_mtx_assert_locked(p)	sx_assert(p, SA_LOCKED)
-#define hammer2_mtx_assert_unlocked(p)	sx_assert(p, SA_UNLOCKED)
-#define hammer2_mtx_assert_ex(p)	sx_assert(p, SA_XLOCKED)
-#define hammer2_mtx_assert_sh(p)	sx_assert(p, SA_SLOCKED)
-*/
+#define hammer2_mtx_assert_locked(p)	KASSERT(rw_lock_held(p))
+#define hammer2_mtx_assert_unlocked(p)	KASSERT(!rw_lock_held(p))
+#define hammer2_mtx_assert_ex(p)	KASSERT(rw_write_held(p))
+#define hammer2_mtx_assert_sh(p)	KASSERT(rw_read_held(p))
 
 typedef krwlock_t hammer2_spin_t;
 
@@ -164,12 +150,10 @@ typedef krwlock_t hammer2_spin_t;
 #define hammer2_spin_unsh(p)		rw_exit(p)
 #define hammer2_spin_destroy(p)		rw_destroy(p)
 
-/*
-#define hammer2_spin_assert_locked(p)	sx_assert(p, SA_LOCKED)
-#define hammer2_spin_assert_unlocked(p)	sx_assert(p, SA_UNLOCKED)
-#define hammer2_spin_assert_ex(p)	sx_assert(p, SA_XLOCKED)
-#define hammer2_spin_assert_sh(p)	sx_assert(p, SA_SLOCKED)
-*/
+#define hammer2_spin_assert_locked(p)	KASSERT(rw_lock_held(p))
+#define hammer2_spin_assert_unlocked(p)	KASSERT(!rw_lock_held(p))
+#define hammer2_spin_assert_ex(p)	KASSERT(rw_write_held(p))
+#define hammer2_spin_assert_sh(p)	KASSERT(rw_read_held(p))
 
 /* per HAMMER2 list of device vnode */
 TAILQ_HEAD(hammer2_devvp_list, hammer2_devvp); /* <-> hammer2_devvp::entry */
@@ -245,7 +229,8 @@ struct hammer2_chain {
 	RB_ENTRY(hammer2_chain) rbnode;		/* live chain(s) */
 	TAILQ_ENTRY(hammer2_chain) entry;	/* 0-refs LRU */
 	hammer2_mtx_t		lock;
-	hammer2_mtx_t		inp_lock;
+	kmutex_t		inp_lock;
+	kcondvar_t		inp_cv;
 	hammer2_chain_core_t	core;
 	hammer2_blockref_t	bref;
 	hammer2_dev_t		*hmp;
@@ -354,6 +339,7 @@ typedef struct hammer2_cluster	hammer2_cluster_t;
  * HAMMER2 inode.
  */
 struct hammer2_inode {
+	struct genfs_node	h_gnode;	/* must be at offset 0 */
 	RB_ENTRY(hammer2_inode) rbnode;		/* inumber lookup (HL) */
 	LIST_ENTRY(hammer2_inode) entry;
 	hammer2_mtx_t		lock;		/* inode lock */
@@ -372,7 +358,7 @@ struct hammer2_inode {
  * HAMMER2 XOP - container for VOP/XOP operation.
  *
  * This structure is used to distribute a VOP operation across multiple
- * nodes.  In FreeBSD HAMMER2, XOP is currently just a function called by
+ * nodes.  In NetBSD HAMMER2, XOP is currently just a function called by
  * VOP to handle chains.
  */
 typedef void (*hammer2_xop_func_t)(union hammer2_xop *, int);
@@ -430,9 +416,9 @@ struct hammer2_xop_lookup {
 struct hammer2_xop_bmap {
 	hammer2_xop_head_t	head;
 	daddr_t			lbn;
-	daddr_t			pbn;
 	int			runp;
 	int			runb;
+	hammer2_off_t		offset;
 };
 
 struct hammer2_xop_strategy {
@@ -464,6 +450,7 @@ struct hammer2_devvp {
 	struct vnode		*devvp;		/* device vnode */
 	char			*path;		/* device vnode path */
 	int			open;		/* 1 if devvp open */
+	int			xflags;
 };
 
 typedef struct hammer2_devvp hammer2_devvp_t;
@@ -528,7 +515,8 @@ struct hammer2_pfs {
 	hammer2_ipdep_list_t	*ipdep_lists;	/* inode dependencies for XOP */
 	hammer2_spin_t		inum_spin;	/* inumber lookup */
 	hammer2_spin_t		lru_spin;
-	hammer2_mtx_t		xop_lock;
+	kmutex_t		xop_lock;
+	kcondvar_t		xop_cv;
 	struct mount		*mp;
 	struct uuid		pfs_clid;
 	hammer2_inode_t		*iroot;		/* PFS root inode */
@@ -540,7 +528,8 @@ struct hammer2_pfs {
 	int			flags;		/* for HAMMER2_PMPF_xxx */
 	int			lru_count;	/* #of chains on LRU */
 	unsigned long		ipdep_mask;
-	char			mntpt[128];
+	char			*fspec;		/* for MNT_GETARGS */
+	char			*mntpt;
 };
 
 #define HAMMER2_PMPF_SPMP	0x00000001
@@ -561,18 +550,22 @@ struct hammer2_pfs {
 #define VTOI(vp)	((hammer2_inode_t *)(vp)->v_data)
 
 MALLOC_DECLARE(M_HAMMER2);
-//extern uma_zone_t zone_buffer_read;
-//extern uma_zone_t zone_xops;
+MALLOC_DECLARE(M_HAMMER2_RBUF);
+extern struct pool hammer2_inode_pool;
+extern struct pool zone_xops;
 
-extern int hammer2_cluster_meta_read;
-extern int hammer2_cluster_data_read;
 extern long hammer2_inode_allocs;
 extern long hammer2_chain_allocs;
 extern long hammer2_dio_allocs;
 extern int hammer2_dio_limit;
 
-extern struct vop_vector hammer2_vnodeops;
-extern struct vop_vector hammer2_fifoops;
+extern int (**hammer2_vnodeop_p)(void *);
+extern int (**hammer2_specop_p)(void *);
+extern int (**hammer2_fifoop_p)(void *);
+
+extern const struct vnodeopv_desc hammer2_vnodeop_opv_desc;
+extern const struct vnodeopv_desc hammer2_specop_opv_desc;
+extern const struct vnodeopv_desc hammer2_fifoop_opv_desc;
 
 extern hammer2_xop_desc_t hammer2_readdir_desc;
 extern hammer2_xop_desc_t hammer2_nresolve_desc;
@@ -626,7 +619,7 @@ hammer2_chain_t *hammer2_inode_chain_and_parent(hammer2_inode_t *, int,
 hammer2_inode_t *hammer2_inode_lookup(hammer2_pfs_t *, hammer2_tid_t);
 void hammer2_inode_ref(hammer2_inode_t *);
 void hammer2_inode_drop(hammer2_inode_t *);
-int hammer2_igetv(hammer2_inode_t *, int, struct vnode **);
+int hammer2_igetv(struct mount *, hammer2_inode_t *, int, struct vnode **);
 hammer2_inode_t *hammer2_inode_get(hammer2_pfs_t *, hammer2_xop_head_t *,
     hammer2_tid_t, int);
 hammer2_key_t hammer2_inode_data_count(const hammer2_inode_t *);
@@ -641,15 +634,13 @@ int hammer2_io_bread(hammer2_dev_t *, int, off_t, int, hammer2_io_t **);
 void hammer2_io_bqrelse(hammer2_io_t **);
 
 /* hammer2_ioctl.c */
-/*
 int hammer2_ioctl_impl(hammer2_inode_t *, unsigned long, void *, int,
-    struct ucred *);
-*/
+    kauth_cred_t cred);
 
 /* hammer2_ondisk.c */
 int hammer2_open_devvp(struct mount *, const hammer2_devvp_list_t *);
 int hammer2_close_devvp(const hammer2_devvp_list_t *);
-int hammer2_init_devvp(const struct mount *, const char *,
+int hammer2_init_devvp(struct mount *, const char *,
     hammer2_devvp_list_t *);
 void hammer2_cleanup_devvp(hammer2_devvp_list_t *);
 int hammer2_init_volumes(const hammer2_devvp_list_t *, hammer2_volume_t *,
@@ -657,7 +648,7 @@ int hammer2_init_volumes(const hammer2_devvp_list_t *, hammer2_volume_t *,
 hammer2_volume_t *hammer2_get_volume(hammer2_dev_t *, hammer2_off_t);
 
 /* hammer2_strategy.c */
-int hammer2_strategy(struct vop_strategy_args *);
+int hammer2_strategy(void *v);
 void hammer2_xop_strategy_read(hammer2_xop_t *, int);
 
 /* hammer2_subr.c */
@@ -665,11 +656,15 @@ int hammer2_get_dtype(uint8_t);
 int hammer2_get_vtype(uint8_t);
 void hammer2_time_to_timespec(uint64_t, struct timespec *);
 uint32_t hammer2_to_unix_xid(const struct uuid *);
-hammer2_key_t hammer2_dirhash(const unsigned char *, size_t);
+hammer2_key_t hammer2_dirhash(const char *aname, size_t len);
 int hammer2_calc_logical(hammer2_inode_t *, hammer2_off_t, hammer2_key_t *,
     hammer2_key_t *);
 int hammer2_get_logical(void);
 const char *hammer2_breftype_to_str(uint8_t);
+
+/* hammer2_vnops.c */
+int hammer2_vinit(struct mount *, int (**specops)(void *),
+    int (**fifoops)(void *), struct vnode **);
 
 /* hammer2_xops.c */
 void hammer2_xop_readdir(hammer2_xop_t *, int);
@@ -728,10 +723,18 @@ hammer2_assert_cluster(const hammer2_cluster_t *cluster)
 	    "unexpected cluster nchains %d", cluster->nchains);
 }
 
-#define hammer2_icrc32(buf, size)	iscsi_crc32((buf), (size))
-#define hammer2_icrc32c(buf, size, crc)	iscsi_crc32_ext((buf), (size), (crc))
+static __inline void
+hammer2_assert_inode_meta(const hammer2_inode_t *ip)
+{
+	KASSERTMSG(ip, "NULL ip");
+	KASSERTMSG(ip->meta.mode, "mode 0");
+	KASSERTMSG(ip->meta.type, "type 0");
+}
+
 uint32_t iscsi_crc32(const void *, size_t);
 uint32_t iscsi_crc32_ext(const void *, size_t, uint32_t);
-uint32_t calculate_crc32c(uint32_t, const void *, size_t);
+
+#define hammer2_icrc32(buf, size)	iscsi_crc32((buf), (size))
+#define hammer2_icrc32c(buf, size, crc)	iscsi_crc32_ext((buf), (size), (crc))
 
 #endif /* !_FS_HAMMER2_HAMMER2_H_ */

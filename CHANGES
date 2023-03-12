@@ -1,3 +1,9 @@
+v1.0.0
+======
+- Add read-only support
+- Sync with DragonFly
+- Sync with FreeBSD
+
 v0.1.1
 ======
 - README.md: Mention https://github.com/kusumi/makefs
@@ -5,5 +11,5 @@ v0.1.1
 v0.1.0
 ======
 - Initial release
-- sbin/* commands for read-only support are implemented
+- Add sbin/* commands for read-only support
 - VFS_MOUNT() returns EOPNOTSUPP

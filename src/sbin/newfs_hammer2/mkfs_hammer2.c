@@ -356,7 +356,7 @@ format_hammer2_inode(hammer2_volume_t *vol, hammer2_mkfs_options_t *opt,
 		rawip->meta.name_len = strlen(opt->Label[i]);
 		bcopy(opt->Label[i], rawip->filename, rawip->meta.name_len);
 		rawip->meta.name_key =
-				dirhash(rawip->filename, rawip->meta.name_len);
+				dirhash((char *)rawip->filename, rawip->meta.name_len);
 
 		/*
 		 * Compression mode and supported copyids.
@@ -676,7 +676,7 @@ blkrefary_cmp(const void *b1, const void *b2)
 void
 hammer2_mkfs(int ac, char **av, hammer2_mkfs_options_t *opt)
 {
-	hammer2_off_t reserved_size;
+	hammer2_off_t resid, reserved_size;
 	hammer2_ondisk_t fso;
 	int i;
 	char *vol_fsid = NULL;
@@ -702,6 +702,8 @@ hammer2_mkfs(int ac, char **av, hammer2_mkfs_options_t *opt)
 	hammer2_init_ondisk(&fso);
 	fso.version = opt->Hammer2Version;
 	fso.nvolumes = ac;
+	resid = opt->FileSystemSize;
+
 	for (i = 0; i < fso.nvolumes; ++i) {
 		hammer2_volume_t *vol = &fso.volumes[i];
 		hammer2_off_t size;
@@ -709,6 +711,15 @@ hammer2_mkfs(int ac, char **av, hammer2_mkfs_options_t *opt)
 		if (fd < 0)
 			err(1, "Unable to open %s R+W", av[i]);
 		size = check_volume(fd);
+		if (opt->FileSystemSize > 0) {
+			if (resid == 0)
+				errx(1, "No remaining filesystem size for %s",
+				    av[i]);
+			if (size > resid)
+				size = resid;
+			resid -= size;
+		}
+		assert(size > 0);
 		if (i == fso.nvolumes - 1)
 			size &= ~HAMMER2_VOLUME_ALIGNMASK64;
 		else
