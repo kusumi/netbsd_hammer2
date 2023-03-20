@@ -9,13 +9,13 @@ NetBSD [HAMMER2](https://gitweb.dragonflybsd.org/dragonfly.git/blob/HEAD:/sys/vf
 
 ## Requirements
 
-+ Recent NetBSD release
++ Recent NetBSD
 
     + Compiles and tested with -CURRENT
 
     + Does not support 9.X or below (due to changes that require too many \_\_NetBSD\_Version\_\_ ifdefs compared to relatively stable FreeBSD kernel API)
 
-+ NetBSD src tree under /usr/src by default
++ NetBSD src tree under /usr/src
 
 + Bash
 

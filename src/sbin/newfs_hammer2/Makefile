@@ -8,7 +8,6 @@ MAN=	newfs_hammer2.8
 
 WARNS=	5
 
-CFLAGS+=	-I${NETBSDSRCDIR}/sys
 CFLAGS+=	-I../../sys
 CFLAGS+=	-I../hammer2
 

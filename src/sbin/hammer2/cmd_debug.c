@@ -41,6 +41,7 @@
 #include <sys/sha2.h>
 
 #define GIG	(1024LL*1024*1024)
+#define nitems	__arraycount
 
 static int show_all_volume_headers = 0;
 static int show_tab = 2;
@@ -293,14 +294,14 @@ show_volhdr(hammer2_volume_data_t *voldata, int bi)
 	printf("    reserved0088   0x%016jx\n", voldata->reserved0088);
 	printf("    freemap_tid    0x%016jx\n", voldata->freemap_tid);
 	printf("    bulkfree_tid   0x%016jx\n", voldata->bulkfree_tid);
-	for (i = 0; i < __arraycount(voldata->reserved00A0); ++i) {
+	for (i = 0; i < nitems(voldata->reserved00A0); ++i) {
 		printf("    reserved00A0/%u 0x%016jx\n",
 		       i, voldata->reserved00A0[0]);
 	}
 	printf("    total_size     0x%016jx\n", voldata->total_size);
 
 	printf("    copyexists    ");
-	for (i = 0; i < __arraycount(voldata->copyexists); ++i)
+	for (i = 0; i < nitems(voldata->copyexists); ++i)
 		printf(" 0x%02x", voldata->copyexists[i]);
 	printf("\n");
 
@@ -314,7 +315,7 @@ show_volhdr(hammer2_volume_data_t *voldata, int bi)
 	 *	 CRCs.
 	 */
 	printf("\n");
-	for (i = 0; i < __arraycount(voldata->icrc_sects); ++i) {
+	for (i = 0; i < nitems(voldata->icrc_sects); ++i) {
 		printf("    icrc_sects[%u]  ", i);
 		switch(i) {
 		case HAMMER2_VOL_ICRC_SECT0:

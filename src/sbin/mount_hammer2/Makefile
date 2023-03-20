@@ -6,7 +6,6 @@ MAN=	mount_hammer2.8
 
 WARNS=	5
 
-CFLAGS+=	-I${NETBSDSRCDIR}/sys
 CFLAGS+=	-I../../sys
 
 MOUNT=		${NETBSDSRCDIR}/sbin/mount

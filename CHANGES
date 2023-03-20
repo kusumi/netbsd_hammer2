@@ -1,3 +1,8 @@
+v1.0.1
+======
+- Minor fix and cleanup
+- Sync with DragonFly
+
 v1.0.0
 ======
 - Add read-only support

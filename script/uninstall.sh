@@ -8,7 +8,6 @@ if [ "${DIR}" = "" ]; then
 fi
 
 [ -e /usr/bin/uname ] || exit 1
-[ -e /usr/bin/install ] || exit 1
 
 KMOD_DIR=/stand/`/usr/bin/uname -m`/`/usr/bin/uname -r`/modules
 [ -d ${KMOD_DIR} ] || exit 1

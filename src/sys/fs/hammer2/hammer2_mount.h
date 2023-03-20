@@ -38,6 +38,8 @@
 #ifndef _FS_HAMMER2_MOUNT_H_
 #define _FS_HAMMER2_MOUNT_H_
 
+#include <sys/param.h>
+
 /* sys/sys/mount.h */
 #define MOUNT_HAMMER2	"hammer2"	/* HAMMER2 Filesystem */
 

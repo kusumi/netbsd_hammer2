@@ -808,7 +808,7 @@ next_hmp:
 		 */
 		hammer2_mtx_sh(&spmp->iroot->lock);
 		hammer2_mtx_sh(&spmp->iroot->lock);
-		debug_hprintf("recursively acquired read lock...\n");
+		/* Recursively acquired read lock. */
 		hammer2_mtx_unlock(&spmp->iroot->lock);
 		hammer2_mtx_unlock(&spmp->iroot->lock);
 #endif
