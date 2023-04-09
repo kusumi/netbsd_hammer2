@@ -45,10 +45,10 @@
 #include <sys/unistd.h>
 #include <sys/vnode.h>
 
-#include <miscfs/fifofs/fifo.h>
 #include <miscfs/genfs/genfs.h>
 #include <miscfs/genfs/genfs_node.h>
 #include <miscfs/specfs/specdev.h>
+#include <miscfs/fifofs/fifo.h>
 
 #include "hammer2.h"
 
@@ -141,9 +141,6 @@ hammer2_access(void *v)
 	hammer2_inode_t *ip = VTOI(vp);
 	int error;
 
-	if (vp->v_type == VCHR || vp->v_type == VBLK)
-		return (EOPNOTSUPP);
-
 	error = hammer2_check_possible(vp, ip, ap->a_accmode);
 	if (error)
 		return (error);
@@ -199,18 +196,13 @@ static int
 hammer2_setattr(void *v)
 {
 	struct vop_setattr_args /* {
-		struct vnodeop_desc *a_desc;
 		struct vnode *a_vp;
 		struct vattr *a_vap;
 		kauth_cred_t a_cred;
-		struct proc *a_p;
 	} */ *ap = v;
 	struct vnode *vp = ap->a_vp;
 	struct vattr *vap = ap->a_vap;
 
-	/*
-	 * Only size is changeable.
-	 */
 	if (vap->va_type != VNON
 	    || vap->va_nlink != (nlink_t)VNOVAL
 	    || vap->va_fsid != (dev_t)VNOVAL
@@ -225,15 +217,26 @@ hammer2_setattr(void *v)
 	    || vap->va_atime.tv_sec != (time_t)VNOVAL
 	    || vap->va_mtime.tv_sec != (time_t)VNOVAL
 	    || vap->va_mode != (mode_t)VNOVAL)
-		return (EOPNOTSUPP);
+		return (EROFS);
 
-	if (vap->va_size != (u_quad_t)VNOVAL
-	    && vp->v_type != VCHR
-	    && vp->v_type != VBLK
-	    && vp->v_type != VFIFO)
-		return (EOPNOTSUPP);
+	if (vap->va_size != (u_quad_t)VNOVAL) {
+		switch (vp->v_type) {
+		case VDIR:
+			return (EISDIR);
+		case VLNK:
+		case VREG:
+			return (EROFS);
+		case VCHR:
+		case VBLK:
+		case VSOCK:
+		case VFIFO:
+			return (0);
+		default:
+			return (EINVAL);
+		}
+	}
 
-	return (0);
+	return (EINVAL);
 }
 
 static int
@@ -578,16 +581,12 @@ hammer2_nresolve(void *v)
 	struct vnode *vp, *dvp = ap->a_dvp;
 	struct componentname *cnp = ap->a_cnp;
 	hammer2_xop_nresolve_t *xop;
-	hammer2_inode_t *ip, *dip;
+	hammer2_inode_t *ip, *dip = VTOI(dvp);
 	int error;
 
 	KASSERT(VOP_ISLOCKED(dvp));
-
 	KKASSERT(ap->a_vpp);
 	*ap->a_vpp = NULL;
-
-	dvp = ap->a_dvp;
-	dip = VTOI(dvp);
 
 	/* Check accessibility of directory. */
 	error = VOP_ACCESS(dvp, VEXEC, cnp->cn_cred);
@@ -856,11 +855,11 @@ static const struct vnodeopv_entry_desc hammer2_vnodeop_entries[] = {
 	{ &vop_fsync_desc, genfs_eopnotsupp },		/* fsync */
 	{ &vop_seek_desc, genfs_seek },			/* seek */
 	{ &vop_remove_desc, genfs_eopnotsupp },		/* remove */
-	{ &vop_link_desc, genfs_eopnotsupp },		/* link */
+	{ &vop_link_desc, genfs_erofs_link },		/* link */
 	{ &vop_rename_desc, genfs_eopnotsupp },		/* rename */
 	{ &vop_mkdir_desc, genfs_eopnotsupp },		/* mkdir */
 	{ &vop_rmdir_desc, genfs_eopnotsupp },		/* rmdir */
-	{ &vop_symlink_desc, genfs_eopnotsupp },	/* symlink */
+	{ &vop_symlink_desc, genfs_erofs_symlink },	/* symlink */
 	{ &vop_readdir_desc, hammer2_readdir },		/* readdir */
 	{ &vop_readlink_desc, hammer2_readlink },	/* readlink */
 	{ &vop_abortop_desc, genfs_abortop },		/* abortop */

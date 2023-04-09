@@ -205,7 +205,7 @@ hammer2_inode_drop(hammer2_inode_t *ip)
 
 	while (ip) {
 		refs = ip->refs;
-		__insn_barrier();
+		cpu_ccfence();
 		if (refs == 1) {
 			/*
 			 * Transition to zero, must interlock with
@@ -217,10 +217,10 @@ hammer2_inode_drop(hammer2_inode_t *ip)
 			KKASSERT(pmp);
 			hammer2_spin_ex(&pmp->inum_spin);
 
-			if (atomic_cmpset_uint(&ip->refs, 1, 0)) {
+			if (atomic_cmpset_int(&ip->refs, 1, 0)) {
 				if (ip->flags & HAMMER2_INODE_ONRBTREE) {
-					atomic_and_uint(&ip->flags,
-					    ~HAMMER2_INODE_ONRBTREE);
+					atomic_clear_int(&ip->flags,
+					    HAMMER2_INODE_ONRBTREE);
 					RB_REMOVE(hammer2_inode_tree,
 					    &pmp->inum_tree, ip);
 				}
@@ -243,7 +243,7 @@ hammer2_inode_drop(hammer2_inode_t *ip)
 			}
 		} else {
 			/* Non zero transition. */
-			if (atomic_cmpset_uint(&ip->refs, refs, refs - 1))
+			if (atomic_cmpset_int(&ip->refs, refs, refs - 1))
 				break;
 		}
 	}
@@ -276,7 +276,9 @@ hammer2_igetv(struct mount *mp, hammer2_inode_t *ip, int lktype,
 		*vpp = NULL;
 		return (error);
 	}
-	KASSERT(vp);
+	KKASSERT(vp);
+	KKASSERT(VOP_ISLOCKED(vp) == 0);
+	KKASSERT(vp->v_op);
 
 	if (lktype != LK_NONE) {
 		error = vn_lock(vp, lktype);
@@ -286,7 +288,7 @@ hammer2_igetv(struct mount *mp, hammer2_inode_t *ip, int lktype,
 			return (error);
 		}
 	} else {
-		KASSERT(VOP_ISLOCKED(vp) == LK_NONE);
+		KASSERT(VOP_ISLOCKED(vp) == 0);
 	}
 
 	KASSERTMSG(vp->v_type != VBAD, "VBAD");
@@ -408,7 +410,7 @@ again:
 			hammer2_inode_drop(nip);
 			goto again;
 		}
-		atomic_or_uint(&nip->flags, HAMMER2_INODE_ONRBTREE);
+		atomic_set_int(&nip->flags, HAMMER2_INODE_ONRBTREE);
 		hammer2_spin_unex(&pmp->inum_spin);
 	}
 

@@ -1,3 +1,9 @@
+v1.0.2
+======
+- Minor fix and cleanup
+- Sync with DragonFly
+- Reduce diff among FreeBSD / NetBSD / OpenBSD
+
 v1.0.1
 ======
 - Minor fix and cleanup

@@ -63,6 +63,7 @@
 #include <sys/errno.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
+#include <sys/pool.h>
 #include <sys/mount.h>
 #include <sys/proc.h>
 #include <sys/queue.h>
@@ -529,7 +530,6 @@ struct hammer2_pfs {
 	int			lru_count;	/* #of chains on LRU */
 	unsigned long		ipdep_mask;
 	char			*fspec;		/* for MNT_GETARGS */
-	char			*mntpt;
 };
 
 #define HAMMER2_PMPF_SPMP	0x00000001
@@ -552,7 +552,7 @@ struct hammer2_pfs {
 MALLOC_DECLARE(M_HAMMER2);
 MALLOC_DECLARE(M_HAMMER2_RBUF);
 extern struct pool hammer2_inode_pool;
-extern struct pool zone_xops;
+extern struct pool hammer2_xops_pool;
 
 extern long hammer2_inode_allocs;
 extern long hammer2_chain_allocs;
@@ -635,7 +635,7 @@ void hammer2_io_bqrelse(hammer2_io_t **);
 
 /* hammer2_ioctl.c */
 int hammer2_ioctl_impl(hammer2_inode_t *, unsigned long, void *, int,
-    kauth_cred_t cred);
+    kauth_cred_t);
 
 /* hammer2_ondisk.c */
 int hammer2_open_devvp(struct mount *, const hammer2_devvp_list_t *);

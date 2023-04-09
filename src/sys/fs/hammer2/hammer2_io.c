@@ -103,7 +103,7 @@ hammer2_io_alloc(hammer2_dev_t *hmp, hammer2_key_t data_off)
 	pbase = lbase & pmask;
 
 	if (pbase == 0 || ((lbase + lsize - 1) & pmask) != pbase)
-		hpanic("illegal base: %016jx %016jx+%08x / %016jx\n",
+		hpanic("illegal base: %016jx %016jx+%08x / %016jx",
 		    pbase, lbase, lsize, pmask);
 
 	/* Access or allocate dio, bump dio->refs to prevent destruction. */

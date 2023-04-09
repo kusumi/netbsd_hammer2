@@ -54,7 +54,11 @@ hammer2_strategy(void *v)
 		struct vnode *a_vp;
 		struct buf *a_bp;
 	} */ *ap = v;
+	struct vnode *vp = ap->a_vp;
 	struct buf *bp = ap->a_bp;
+
+	if (vp->v_type == VBLK || vp->v_type == VCHR)
+		hpanic("spec %d", vp->v_type);
 
 	if (bp->b_flags & B_READ) {
 		hammer2_strategy_read(ap);
@@ -82,7 +86,8 @@ hammer2_decompress_LZ4_callback(const char *data, unsigned int bytes,
 	compressed_size = *(const int *)data;
 	KKASSERT((uint32_t)compressed_size <= bytes - sizeof(int));
 
-	compressed_buffer = malloc(HAMMER2_PBUFSIZE, M_HAMMER2_RBUF, M_WAITOK | M_ZERO);
+	compressed_buffer = malloc(HAMMER2_PBUFSIZE, M_HAMMER2_RBUF,
+	    M_WAITOK | M_ZERO);
 	result = LZ4_decompress_safe(__DECONST(char *, &data[sizeof(int)]),
 	    compressed_buffer, compressed_size, bp->b_bufsize);
 	if (result < 0) {
@@ -120,7 +125,8 @@ hammer2_decompress_ZLIB_callback(const char *data, unsigned int bytes,
 	if (result != Z_OK)
 		hprintf("fatal error in inflateInit\n");
 
-	compressed_buffer = malloc(HAMMER2_PBUFSIZE, M_HAMMER2_RBUF, M_WAITOK | M_ZERO);
+	compressed_buffer = malloc(HAMMER2_PBUFSIZE, M_HAMMER2_RBUF,
+	    M_WAITOK | M_ZERO);
 	strm_decompress.next_in = __DECONST(char *, data);
 
 	/* XXX Supply proper size, subset of device bp. */
@@ -242,7 +248,7 @@ hammer2_strategy_read_completion(hammer2_chain_t *focus, const char *data,
 		bp->b_resid = 0;
 		bp->b_error = 0;
 	} else if (focus->bref.type == HAMMER2_BREF_TYPE_DATA) {
-		atomic_or_uint(&focus->flags, HAMMER2_CHAIN_RELEASE);
+		atomic_set_int(&focus->flags, HAMMER2_CHAIN_RELEASE);
 		/* Decompression and copy. */
 		switch (HAMMER2_DEC_COMP(focus->bref.methods)) {
 		case HAMMER2_COMP_LZ4:

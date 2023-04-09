@@ -123,7 +123,7 @@ mount_hammer2_parseargs(int argc, char **argv,
 		free(tmp);
 	}
 
-	strlcpy(args->volume, canon_dev, sizeof(args->volume));
+	args->volume = canon_dev;
 	args->hflags = HMNT2_LOCAL; /* force local, not optional */
 }
 
@@ -158,8 +158,8 @@ mount_hammer2(int argc, char **argv)
 		errx(1, "%s on %s: %s", args.volume, canon_dir, errcause);
 	}
 	if (mntflags & MNT_GETARGS) {
-		printf("volume=%s, hflags=0x%x, cluster_fd=%d\n",
-		    args.volume, args.hflags, args.cluster_fd);
+		printf("hflags=0x%x, cluster_fd=%d\n",
+		    args.hflags, args.cluster_fd);
 	}
 
 	return (0);

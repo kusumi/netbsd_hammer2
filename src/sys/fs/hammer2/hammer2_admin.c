@@ -60,23 +60,25 @@ H2XOPDESCRIPTOR(strategy_read);
  * threads wait for frontend to collect results.
  */
 static void
-hammer2_xop_fifo_alloc(hammer2_xop_fifo_t *fifo, int fifo_size)
+hammer2_xop_fifo_alloc(hammer2_xop_fifo_t *fifo, size_t nmemb)
 {
 	int flags = M_WAITOK | M_ZERO;
 	size_t size;
 
-	KKASSERT((fifo_size & (fifo_size - 1)) == 0);
-	KKASSERT(fifo_size >= HAMMER2_XOPFIFO);
-	KKASSERT(fifo_size <= INT_MAX);
+	/* Assert nmemb requirements. */
+	KKASSERT((nmemb & (nmemb - 1)) == 0);
+	KKASSERT(nmemb >= HAMMER2_XOPFIFO);
 
-	size = sizeof(hammer2_chain_t*) * fifo_size;
+	/* malloc or realloc fifo array. */
+	size = nmemb * sizeof(hammer2_chain_t *);
 	if (!fifo->array)
 		fifo->array = malloc(size, M_HAMMER2, flags);
 	else
 		fifo->array = realloc(fifo->array, size, M_HAMMER2, flags);
 	KKASSERT(fifo->array);
 
-	size = sizeof(int) * fifo_size;
+	/* malloc or realloc fifo errors. */
+	size = nmemb * sizeof(int);
 	if (!fifo->errors)
 		fifo->errors = malloc(size, M_HAMMER2, flags);
 	else
@@ -94,7 +96,7 @@ hammer2_xop_alloc(hammer2_inode_t *ip)
 {
 	hammer2_xop_t *xop;
 
-	xop = pool_get(&zone_xops, PR_WAITOK | PR_ZERO);
+	xop = pool_get(&hammer2_xops_pool, PR_WAITOK | PR_ZERO);
 	KKASSERT(xop->head.cluster.array[0].chain == NULL);
 
 	xop->head.ip1 = ip;
@@ -201,8 +203,8 @@ hammer2_xop_start(hammer2_xop_head_t *xop, hammer2_xop_desc_t *desc)
 
 	for (i = 0; i < ip->cluster.nchains; ++i) {
 		if (ip->cluster.array[i].chain) {
-			atomic_or_uint(&xop->run_mask, 1LLU << i);
-			atomic_or_uint(&xop->chk_mask, 1LLU << i);
+			atomic_set_int(&xop->run_mask, 1LLU << i);
+			atomic_set_int(&xop->chk_mask, 1LLU << i);
 		}
 	}
 
@@ -304,7 +306,7 @@ hammer2_xop_retire(hammer2_xop_head_t *xop, uint32_t mask)
 		free(fifo->errors, M_HAMMER2);
 	}
 
-	pool_put(&zone_xops, xop);
+	pool_put(&hammer2_xops_pool, xop);
 }
 
 /*

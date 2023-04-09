@@ -38,6 +38,7 @@
 #ifndef _FS_HAMMER2_COMPAT_H_
 #define _FS_HAMMER2_COMPAT_H_
 
+#include <sys/cdefs.h>
 #include <sys/stdint.h>
 #include <sys/atomic.h>
 
@@ -60,7 +61,10 @@
 /* DragonFly KKASSERT is NetBSD KASSERT equivalent. */
 #define KKASSERT	KASSERT
 
-#define atomic_cmpset_uint(ptr, old, new)	\
+#define atomic_set_int(p, b)	atomic_or_uint((p), (b))
+#define atomic_clear_int(p, b)	atomic_and_uint((p), ~(b))
+
+#define atomic_cmpset_int(ptr, old, new)	\
 	(atomic_cas_uint((ptr), (old), (new)) == (old))
 
 #define atomic_cmpset_32(ptr, old, new)	\
@@ -68,13 +72,13 @@
 
 /* XXX Not atomic, but harmless with current read-only support. */
 static __inline unsigned int
-atomic_fetchadd_uint(volatile unsigned int *p, unsigned int v)
+atomic_fetchadd_int(volatile unsigned int *p, unsigned int v)
 {
 	unsigned int value;
 
 	do {
 		value = *p;
-	} while (!atomic_cmpset_uint(p, value, value + v));
+	} while (!atomic_cmpset_int(p, value, value + v));
 	return (value);
 }
 
@@ -89,13 +93,13 @@ atomic_fetchadd_32(volatile uint32_t *p, uint32_t v)
 	return (value);
 }
 
-#define atomic_fetchadd_int	atomic_fetchadd_uint
-
 /* XXX NetBSD only has arch dependent function. */
 #if defined(__i386__) || defined(__x86_64__)
-#define cpu_spinwait	x86_pause
+#define cpu_spinwait()	x86_pause()
 #else
-#define cpu_spinwait	do {} while (0)
+#define cpu_spinwait()	do {} while (0)
 #endif
+
+#define cpu_ccfence	__insn_barrier
 
 #endif /* !_FS_HAMMER2_COMPAT_H_ */

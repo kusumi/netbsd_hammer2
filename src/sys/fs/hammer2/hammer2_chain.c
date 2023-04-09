@@ -185,7 +185,7 @@ hammer2_chain_ref(hammer2_chain_t *chain)
 		 * on the LRU if it encounters it later.
 		 */
 		if (chain->flags & HAMMER2_CHAIN_ONLRU)
-			atomic_or_uint(&chain->flags, HAMMER2_CHAIN_LRUHINT);
+			atomic_set_int(&chain->flags, HAMMER2_CHAIN_LRUHINT);
 	}
 }
 
@@ -225,7 +225,7 @@ hammer2_chain_insert(hammer2_chain_t *parent, hammer2_chain_t *chain,
 	KASSERTMSG(xchain == NULL,
 	    "collision %p %p %016jx", chain, xchain, chain->bref.key);
 
-	atomic_or_uint(&chain->flags, HAMMER2_CHAIN_ONRBTREE);
+	atomic_set_int(&chain->flags, HAMMER2_CHAIN_ONRBTREE);
 	chain->parent = parent;
 	++parent->core.chain_count;
 	++parent->core.generation; /* XXX incs for _get() too */
@@ -255,7 +255,7 @@ hammer2_chain_drop(hammer2_chain_t *chain)
 
 	while (chain) {
 		refs = chain->refs;
-		__insn_barrier();
+		cpu_ccfence();
 
 		KKASSERT(refs > 0);
 		if (refs == 1) {
@@ -263,7 +263,7 @@ hammer2_chain_drop(hammer2_chain_t *chain)
 				chain = hammer2_chain_lastdrop(chain, 0);
 			/* Retry the same chain, or chain from lastdrop. */
 		} else {
-			if (atomic_cmpset_uint(&chain->refs, refs, refs - 1))
+			if (atomic_cmpset_int(&chain->refs, refs, refs - 1))
 				break;
 			/* Retry the same chain. */
 		}
@@ -284,10 +284,10 @@ hammer2_chain_unhold(hammer2_chain_t *chain)
 
 	for (;;) {
 		lockcnt = chain->lockcnt;
-		__insn_barrier();
+		cpu_ccfence();
 
 		if (lockcnt > 1) {
-			if (atomic_cmpset_uint(&chain->lockcnt, lockcnt,
+			if (atomic_cmpset_int(&chain->lockcnt, lockcnt,
 			    lockcnt - 1))
 				break;
 		} else if (hammer2_mtx_ex_try(&chain->lock) == 0) {
@@ -368,7 +368,7 @@ hammer2_chain_lastdrop(hammer2_chain_t *chain, int depth)
 		 *      hammer2_chain_drop() (chain->parent still NULL)
 		 *        hammer2_chain_lastdrop()
 		 */
-		atomic_or_uint(&chain->flags, HAMMER2_CHAIN_DESTROY);
+		atomic_set_int(&chain->flags, HAMMER2_CHAIN_DESTROY);
 	}
 
 	/*
@@ -381,7 +381,7 @@ hammer2_chain_lastdrop(hammer2_chain_t *chain, int depth)
 	 * Chains with children are NOT put on the LRU list.
 	 */
 	if (chain->core.chain_count) {
-		if (atomic_cmpset_uint(&chain->refs, 1, 0)) {
+		if (atomic_cmpset_int(&chain->refs, 1, 0)) {
 			hammer2_spin_unex(&chain->core.spin);
 			hammer2_chain_assert_no_data(chain);
 			hammer2_mtx_unlock(&chain->lock);
@@ -426,7 +426,7 @@ hammer2_chain_lastdrop(hammer2_chain_t *chain, int depth)
 	    chain->pmp && chain->bref.type != HAMMER2_BREF_TYPE_DATA) {
 		if (parent)
 			hammer2_spin_ex(&parent->core.spin);
-		if (atomic_cmpset_uint(&chain->refs, 1, 0) == 0) {
+		if (atomic_cmpset_int(&chain->refs, 1, 0) == 0) {
 			/*
 			 * 1->0 transition failed, retry.  Do not drop
 			 * the chain's data yet!
@@ -454,7 +454,7 @@ hammer2_chain_lastdrop(hammer2_chain_t *chain, int depth)
 		if ((chain->flags & HAMMER2_CHAIN_ONLRU) == 0) {
 			hammer2_spin_ex(&pmp->lru_spin);
 			if ((chain->flags & HAMMER2_CHAIN_ONLRU) == 0) {
-				atomic_or_uint(&chain->flags,
+				atomic_set_int(&chain->flags,
 				    HAMMER2_CHAIN_ONLRU);
 				TAILQ_INSERT_TAIL(&pmp->lru_list, chain, entry);
 				atomic_add_int(&pmp->lru_count, 1);
@@ -486,7 +486,7 @@ hammer2_chain_lastdrop(hammer2_chain_t *chain, int depth)
 		hammer2_spin_ex(&pmp->lru_spin);
 		if (chain->flags & HAMMER2_CHAIN_ONLRU) {
 			atomic_add_int(&pmp->lru_count, -1);
-			atomic_and_uint(&chain->flags, ~HAMMER2_CHAIN_ONLRU);
+			atomic_clear_int(&chain->flags, HAMMER2_CHAIN_ONLRU);
 			TAILQ_REMOVE(&pmp->lru_list, chain, entry);
 		}
 		hammer2_spin_unex(&pmp->lru_spin);
@@ -502,7 +502,7 @@ hammer2_chain_lastdrop(hammer2_chain_t *chain, int depth)
 	 */
 	if (parent) {
 		hammer2_spin_ex(&parent->core.spin);
-		if (atomic_cmpset_uint(&chain->refs, 1, 0) == 0) {
+		if (atomic_cmpset_int(&chain->refs, 1, 0) == 0) {
 			/* 1->0 transition failed, retry. */
 			hammer2_spin_unex(&parent->core.spin);
 			hammer2_spin_unex(&chain->core.spin);
@@ -518,7 +518,7 @@ hammer2_chain_lastdrop(hammer2_chain_t *chain, int depth)
 		if (chain->flags & HAMMER2_CHAIN_ONRBTREE) {
 			RB_REMOVE(hammer2_chain_tree, &parent->core.rbtree,
 			    chain);
-			atomic_and_uint(&chain->flags, ~HAMMER2_CHAIN_ONRBTREE);
+			atomic_clear_int(&chain->flags, HAMMER2_CHAIN_ONRBTREE);
 			--parent->core.chain_count;
 			chain->parent = NULL;
 		}
@@ -532,14 +532,14 @@ hammer2_chain_lastdrop(hammer2_chain_t *chain, int depth)
 			rdrop = parent;
 			atomic_add_int(&rdrop->refs, 1);
 			/*
-			if (atomic_cmpset_uint(&rdrop->refs, 0, 1) == 0)
+			if (atomic_cmpset_int(&rdrop->refs, 0, 1) == 0)
 				rdrop = NULL;
 			*/
 		}
 		hammer2_spin_unex(&parent->core.spin);
 	} else {
 		/* No-parent case. */
-		if (atomic_cmpset_uint(&chain->refs, 1, 0) == 0) {
+		if (atomic_cmpset_int(&chain->refs, 1, 0) == 0) {
 			/* 1->0 transition failed, retry. */
 			hammer2_spin_unex(&parent->core.spin);
 			hammer2_spin_unex(&chain->core.spin);
@@ -565,7 +565,7 @@ hammer2_chain_lastdrop(hammer2_chain_t *chain, int depth)
 	 * freeing it.
 	 */
 	if (chain->flags & HAMMER2_CHAIN_ALLOCATED) {
-		atomic_and_uint(&chain->flags, ~HAMMER2_CHAIN_ALLOCATED);
+		atomic_clear_int(&chain->flags, HAMMER2_CHAIN_ALLOCATED);
 		hammer2_mtx_destroy(&chain->lock);
 		mutex_destroy(&chain->inp_lock);
 		cv_destroy(&chain->inp_cv);
@@ -602,7 +602,7 @@ again:
 		TAILQ_REMOVE(&pmp->lru_list, chain, entry);
 
 		if (chain->flags & HAMMER2_CHAIN_LRUHINT) {
-			atomic_and_uint(&chain->flags, ~HAMMER2_CHAIN_LRUHINT);
+			atomic_clear_int(&chain->flags, HAMMER2_CHAIN_LRUHINT);
 			TAILQ_INSERT_TAIL(&pmp->lru_list, chain, entry);
 			chain = NULL;
 			continue;
@@ -613,12 +613,12 @@ again:
 		 * can safely clear the ONLRU flag.
 		 */
 		atomic_add_int(&pmp->lru_count, -1);
-		if (atomic_cmpset_uint(&chain->refs, 0, 1)) {
-			atomic_and_uint(&chain->flags, ~HAMMER2_CHAIN_ONLRU);
-			atomic_or_uint(&chain->flags, HAMMER2_CHAIN_RELEASE);
+		if (atomic_cmpset_int(&chain->refs, 0, 1)) {
+			atomic_clear_int(&chain->flags, HAMMER2_CHAIN_ONLRU);
+			atomic_set_int(&chain->flags, HAMMER2_CHAIN_RELEASE);
 			break;
 		}
-		atomic_and_uint(&chain->flags, ~HAMMER2_CHAIN_ONLRU);
+		atomic_clear_int(&chain->flags, HAMMER2_CHAIN_ONLRU);
 		chain = NULL;
 	}
 	hammer2_spin_unex(&pmp->lru_spin);
@@ -631,7 +631,7 @@ again:
 	 */
 	while (chain) {
 		refs = chain->refs;
-		__insn_barrier();
+		cpu_ccfence();
 		KKASSERT(refs > 0);
 
 		if (refs == 1) {
@@ -639,7 +639,7 @@ again:
 				chain = hammer2_chain_lastdrop(chain, 1);
 			/* Retry the same chain, or chain from lastdrop. */
 		} else {
-			if (atomic_cmpset_uint(&chain->refs, refs, refs - 1))
+			if (atomic_cmpset_int(&chain->refs, refs, refs - 1))
 				break;
 			/* Retry the same chain. */
 		}
@@ -806,11 +806,11 @@ hammer2_chain_load_data(hammer2_chain_t *chain)
 	mutex_enter(&chain->inp_lock);
 again:
 	if (chain->flags & HAMMER2_CHAIN_IOINPROG) {
-		atomic_or_uint(&chain->flags, HAMMER2_CHAIN_IOSIGNAL);
+		atomic_set_int(&chain->flags, HAMMER2_CHAIN_IOSIGNAL);
 		cv_wait(&chain->inp_cv, &chain->inp_lock);
 		goto again;
 	}
-	atomic_or_uint(&chain->flags, HAMMER2_CHAIN_IOINPROG);
+	atomic_set_int(&chain->flags, HAMMER2_CHAIN_IOINPROG);
 	mutex_exit(&chain->inp_lock);
 
 	/*
@@ -839,7 +839,7 @@ again:
 		if (hammer2_chain_testcheck(chain, bdata) == 0)
 			chain->error = HAMMER2_ERROR_CHECK;
 		else
-			atomic_or_uint(&chain->flags, HAMMER2_CHAIN_TESTEDGOOD);
+			atomic_set_int(&chain->flags, HAMMER2_CHAIN_TESTEDGOOD);
 	}
 
 	switch (bref->type) {
@@ -864,9 +864,9 @@ done:
 	/* Release HAMMER2_CHAIN_IOINPROG and signal waiters if requested. */
 	KKASSERT(chain->flags & HAMMER2_CHAIN_IOINPROG);
 	mutex_enter(&chain->inp_lock);
-	atomic_and_uint(&chain->flags, ~HAMMER2_CHAIN_IOINPROG);
+	atomic_clear_int(&chain->flags, HAMMER2_CHAIN_IOINPROG);
 	if (chain->flags & HAMMER2_CHAIN_IOSIGNAL) {
-		atomic_and_uint(&chain->flags, ~HAMMER2_CHAIN_IOSIGNAL);
+		atomic_clear_int(&chain->flags, HAMMER2_CHAIN_IOSIGNAL);
 		cv_broadcast(&chain->inp_cv);
 	}
 	mutex_exit(&chain->inp_lock);
@@ -895,10 +895,10 @@ hammer2_chain_unlock(hammer2_chain_t *chain)
 	for (;;) {
 		lockcnt = chain->lockcnt;
 		KKASSERT(lockcnt > 0);
-		__insn_barrier();
+		cpu_ccfence();
 
 		if (lockcnt > 1) {
-			if (atomic_cmpset_uint(&chain->lockcnt, lockcnt,
+			if (atomic_cmpset_int(&chain->lockcnt, lockcnt,
 			    lockcnt - 1)) {
 				hammer2_mtx_unlock(&chain->lock);
 				return;
@@ -906,7 +906,7 @@ hammer2_chain_unlock(hammer2_chain_t *chain)
 		} else if (hammer2_mtx_owned(&chain->lock) ||
 		    hammer2_mtx_upgrade_try(&chain->lock) == 0) {
 			/* While holding the mutex exclusively. */
-			if (atomic_cmpset_uint(&chain->lockcnt, 1, 0))
+			if (atomic_cmpset_int(&chain->lockcnt, 1, 0))
 				break;
 		} else {
 			/*
@@ -962,7 +962,7 @@ hammer2_chain_countbrefs(hammer2_chain_t *chain, hammer2_blockref_t *base,
 		} else {
 			chain->core.live_zero = 0;
 		}
-		atomic_or_uint(&chain->flags, HAMMER2_CHAIN_COUNTEDBREFS);
+		atomic_set_int(&chain->flags, HAMMER2_CHAIN_COUNTEDBREFS);
 	}
 	hammer2_spin_unex(&chain->core.spin);
 }
@@ -1567,7 +1567,7 @@ hammer2_base_find(hammer2_chain_t *parent, hammer2_blockref_t *base, int count,
 	 * we might have to check the whole block array.
 	 */
 	i = parent->cache_index;	/* SMP RACE OK */
-	__insn_barrier();
+	cpu_ccfence();
 	limit = parent->core.live_zero;
 	if (i >= limit)
 		i = limit - 1;
@@ -1740,7 +1740,7 @@ hammer2_chain_testcheck(const hammer2_chain_t *chain, void *bdata)
 		    hammer2_icrc32(bdata, chain->bytes);
 		break;
 	default:
-		hpanic("unknown check type %02x\n", chain->bref.methods);
+		hpanic("unknown check type %02x", chain->bref.methods);
 		break;
 	}
 

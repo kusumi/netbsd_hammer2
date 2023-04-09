@@ -181,9 +181,9 @@ hammer2_init_devvp(struct mount *mp, const char *blkdevs,
 
 	path = malloc(MAXPATHLEN, M_TEMP, M_WAITOK | M_ZERO);
 	while (1) {
-		strcpy(path, "");
+		strlcpy(path, "", MAXPATHLEN);
 		if (*p != '/')
-			strcpy(path, "/dev/"); /* Relative path. */
+			strlcpy(path, "/dev/", MAXPATHLEN); /* Relative path. */
 
 		/* Scan beyond "/dev/". */
 		for (i = strlen(path); i < MAXPATHLEN-1; ++i) {
@@ -211,7 +211,6 @@ hammer2_init_devvp(struct mount *mp, const char *blkdevs,
 		}
 
 		/* Lookup path for device vnode. */
-		KKASSERT(strncmp(path, "/dev/", 5) == 0);
 		devvp = NULL;
 		error = hammer2_lookup_device(mp, path, &devvp);
 		if (error) {
@@ -345,7 +344,7 @@ hammer2_verify_volumes_1(const hammer2_volume_t *volumes,
 	}
 
 	/* Check volume. */
-	vol = &volumes[0];
+	vol = &volumes[HAMMER2_ROOT_VOLUME];
 	path = vol->dev->path;
 	if (vol->id) {
 		hprintf("%s has non zero id %d\n", path, vol->id);
