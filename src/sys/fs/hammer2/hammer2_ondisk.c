@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2023 Tomohiro Kusumi <tkusumi@netbsd.org>
+ * Copyright (c) 2022-2023 Tomohiro Kusumi <tkusumi@netbsd.org>
  * Copyright (c) 2011-2022 The DragonFly Project.  All rights reserved.
  * All rights reserved.
  *
@@ -223,7 +223,7 @@ hammer2_init_devvp(struct mount *mp, const char *blkdevs,
 		/* Keep device vnode and path. */
 		e = malloc(sizeof(*e), M_HAMMER2, M_WAITOK | M_ZERO);
 		e->devvp = devvp;
-		e->path = kmem_strdup(path, KM_SLEEP);
+		e->path = kstrdup(path);
 		TAILQ_INSERT_TAIL(devvpl, e, entry);
 	}
 
@@ -246,7 +246,7 @@ hammer2_cleanup_devvp(hammer2_devvp_list_t *devvpl)
 
 		/* Cleanup path. */
 		KKASSERT(e->path);
-		kmem_strfree(e->path);
+		kstrfree(e->path);
 		e->path = NULL;
 
 		free(e, M_HAMMER2);

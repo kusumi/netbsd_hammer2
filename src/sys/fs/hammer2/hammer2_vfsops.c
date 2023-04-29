@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2023 Tomohiro Kusumi <tkusumi@netbsd.org>
+ * Copyright (c) 2022-2023 Tomohiro Kusumi <tkusumi@netbsd.org>
  * Copyright (c) 2011-2022 The DragonFly Project.  All rights reserved.
  *
  * This code is derived from software contributed to The DragonFly Project
@@ -198,7 +198,7 @@ hammer2_init(void)
 	hammer2_assert_clean();
 
 	hammer2_dio_limit = buf_nbuf() * 2;
-	if (hammer2_dio_limit > 100000)
+	if (hammer2_dio_limit > 100000 || hammer2_dio_limit < 0)
 		hammer2_dio_limit = 100000;
 
 	/*
@@ -331,7 +331,7 @@ hammer2_pfsalloc(hammer2_chain_t *chain, const hammer2_inode_data_t *ripdata,
 		pmp->pfs_types[j] = HAMMER2_PFSTYPE_MASTER;
 	else
 		pmp->pfs_types[j] = ripdata->meta.pfs_type;
-	pmp->pfs_names[j] = kmem_strdup((const char *)ripdata->filename, KM_SLEEP);
+	pmp->pfs_names[j] = kstrdup((const char *)ripdata->filename);
 	pmp->pfs_hmps[j] = chain->hmp;
 
 	/*
@@ -463,7 +463,7 @@ again:
 			iroot->cluster.array[i].chain = NULL;
 			pmp->pfs_types[i] = HAMMER2_PFSTYPE_NONE;
 			if (pmp->pfs_names[i]) {
-				kmem_strfree(pmp->pfs_names[i]);
+				kstrfree(pmp->pfs_names[i]);
 				pmp->pfs_names[i] = NULL;
 			}
 			if (rchain) {
@@ -540,17 +540,15 @@ hammer2_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	if (mp->mnt_flag & MNT_GETARGS) {
 		pmp = MPTOPMP(mp);
 		hmp = pmp->pfs_hmps[0];
-		args->volume = NULL;
+		args->fspec = NULL;
 		args->hflags = hmp->hflags;
-		args->cluster_fd = 0;
-		bzero(args->reserved1, sizeof(args->reserved1));
 		return (0);
 	}
 
 	if (mp->mnt_flag & MNT_UPDATE)
 		return (0);
 
-	error = copyinstr(args->volume, devstr, sizeof(devstr), NULL);
+	error = copyinstr(args->fspec, devstr, sizeof(devstr), NULL);
 	if (error) {
 		hprintf("copyinstr failed %d\n", error);
 		return (error);
@@ -837,6 +835,8 @@ next_hmp:
 		 */
 		hammer2_update_pmps(hmp);
 	} else {
+		/* hmp->devvp_list is already constructed. */
+		hammer2_cleanup_devvp(&devvpl);
 		spmp = hmp->spmp;
 		/* XXX NetBSD HAMMER2 always has HMNT2_LOCAL set, so ignore.
 		if (args->hflags & HMNT2_DEVFLAGS)

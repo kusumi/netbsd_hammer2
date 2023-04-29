@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2023 Tomohiro Kusumi <tkusumi@netbsd.org>
+ * Copyright (c) 2022-2023 Tomohiro Kusumi <tkusumi@netbsd.org>
  * Copyright (c) 2011-2022 The DragonFly Project.  All rights reserved.
  *
  * This code is derived from software contributed to The DragonFly Project
@@ -270,14 +270,14 @@ hammer2_readdir(void *v)
 		off_t **a_cookies;
 		int ncookies;
 	} */ *ap = v;
+	struct vnode *vp = ap->a_vp;
+	struct uio *uio = ap->a_uio;
 
 	hammer2_xop_readdir_t *xop;
-	hammer2_inode_t *ip = VTOI(ap->a_vp);
+	hammer2_inode_t *ip = VTOI(vp);
 	const hammer2_inode_data_t *ripdata;
 	hammer2_blockref_t bref;
 	hammer2_tid_t inum;
-	hammer2_key_t lkey;
-	struct uio *uio = ap->a_uio;
 	off_t saveoff = uio->uio_offset;
 	off_t *cookies;
 	int ncookies, r, dtype;
@@ -285,7 +285,7 @@ hammer2_readdir(void *v)
 	uint16_t namlen;
 	const char *dname;
 
-	if (ap->a_vp->v_type != VDIR)
+	if (vp->v_type != VDIR)
 		return (ENOTDIR);
 
 	/* Setup cookies directory entry cookies if requested. */
@@ -322,6 +322,8 @@ hammer2_readdir(void *v)
 		if (cookie_index == ncookies)
 			goto done;
 	}
+	if (error)
+		goto done;
 
 	if (saveoff == 1) {
 		inum = ip->meta.inum & HAMMER2_DIRHASH_USERMSK;
@@ -337,14 +339,12 @@ hammer2_readdir(void *v)
 		if (cookie_index == ncookies)
 			goto done;
 	}
-
-	lkey = saveoff | HAMMER2_DIRHASH_VISIBLE;
 	if (error)
 		goto done;
 
 	/* Use XOP for remaining entries. */
 	xop = hammer2_xop_alloc(ip);
-	xop->lkey = lkey;
+	xop->lkey = saveoff | HAMMER2_DIRHASH_VISIBLE;
 	hammer2_xop_start(&xop->head, &hammer2_readdir_desc);
 
 	for (;;) {
@@ -729,8 +729,7 @@ hammer2_print(void *v)
 	struct vop_print_args /* {
 		struct vnode *a_vp;
 	} */ *ap = v;
-	struct vnode *vp = ap->a_vp;
-	hammer2_inode_t *ip = VTOI(vp);
+	hammer2_inode_t *ip = VTOI(ap->a_vp);
 
 	printf("tag VT_HAMMER2, ino %ju", (uintmax_t)ip->meta.inum);
 	printf("\n");
@@ -746,6 +745,7 @@ hammer2_pathconf(void *v)
 		int a_name;
 		register_t *a_retval;
 	} */ *ap = v;
+	struct vnode *vp = ap->a_vp;
 	int error = 0;
 
 	switch (ap->a_name) {
@@ -759,7 +759,7 @@ hammer2_pathconf(void *v)
 		*ap->a_retval = PATH_MAX;
 		break;
 	case _PC_PIPE_BUF:
-		if (ap->a_vp->v_type == VDIR || ap->a_vp->v_type == VFIFO)
+		if (vp->v_type == VDIR || vp->v_type == VFIFO)
 			*ap->a_retval = PIPE_BUF;
 		else
 			error = EINVAL;
@@ -771,7 +771,7 @@ hammer2_pathconf(void *v)
 		*ap->a_retval = 0;
 		break;
 	case _PC_MIN_HOLE_SIZE:
-		*ap->a_retval = ap->a_vp->v_mount->mnt_stat.f_iosize;
+		*ap->a_retval = vp->v_mount->mnt_stat.f_iosize;
 		break;
 	case _PC_SYNC_IO:
 		*ap->a_retval = 0;
@@ -852,7 +852,7 @@ static const struct vnodeopv_entry_desc hammer2_vnodeop_entries[] = {
 	{ &vop_kqfilter_desc, genfs_kqfilter },		/* kqfilter */
 	{ &vop_revoke_desc, genfs_revoke },		/* revoke */
 	{ &vop_mmap_desc, genfs_mmap },			/* mmap */
-	{ &vop_fsync_desc, genfs_eopnotsupp },		/* fsync */
+	{ &vop_fsync_desc, genfs_nullop },		/* fsync */
 	{ &vop_seek_desc, genfs_seek },			/* seek */
 	{ &vop_remove_desc, genfs_eopnotsupp },		/* remove */
 	{ &vop_link_desc, genfs_erofs_link },		/* link */
@@ -872,7 +872,7 @@ static const struct vnodeopv_entry_desc hammer2_vnodeop_entries[] = {
 	{ &vop_print_desc, hammer2_print },		/* print */
 	{ &vop_islocked_desc, genfs_islocked },		/* islocked */
 	{ &vop_pathconf_desc, hammer2_pathconf },	/* pathconf */
-	{ &vop_advlock_desc, genfs_eopnotsupp },	/* advlock */
+	{ &vop_advlock_desc, genfs_einval },		/* advlock */
 	{ &vop_bwrite_desc, vn_bwrite },		/* bwrite */
 	{ &vop_getpages_desc, genfs_getpages },		/* getpages */
 	{ &vop_putpages_desc, genfs_putpages },		/* putpages */

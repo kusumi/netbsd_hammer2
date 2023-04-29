@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2023 Tomohiro Kusumi <tkusumi@netbsd.org>
+ * Copyright (c) 2022-2023 Tomohiro Kusumi <tkusumi@netbsd.org>
  * Copyright (c) 2011-2012 The DragonFly Project.  All rights reserved.
  *
  * This code is derived from software contributed to The DragonFly Project
@@ -42,7 +42,7 @@
 /*
  * Rollup headers for hammer2 utility
  */
-#include <sys/types.h>
+#include <sys/param.h>
 #include <sys/mount.h>
 #include <sys/time.h>
 #include <sys/wait.h>
@@ -61,6 +61,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include <errno.h>
 #include <fcntl.h>

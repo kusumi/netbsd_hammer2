@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2023 Tomohiro Kusumi <tkusumi@netbsd.org>
+ * Copyright (c) 2022-2023 Tomohiro Kusumi <tkusumi@netbsd.org>
  * Copyright (c) 2011-2022 The DragonFly Project.  All rights reserved.
  *
  * This code is derived from software contributed to The DragonFly Project
@@ -45,14 +45,12 @@
  * This structure is passed from userland to the kernel during the mount
  * system call.
  *
- * The volume name is formatted as '/dev/ad0s1a@LABEL', where the label is
+ * The fspec is formatted as '/dev/ad0s1a@LABEL', where the label is
  * the mount point under the super-root.
  */
 struct hammer2_mount_info {
-	char		*volume;
+	char		*fspec;
 	int		hflags;		/* extended hammer2 mount flags */
-	int		cluster_fd;	/* cluster management pipe/socket */
-	char		reserved1[112];
 };
 
 #define HMNT2_LOCAL		0x00000002

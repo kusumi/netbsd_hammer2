@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2023 Tomohiro Kusumi <tkusumi@netbsd.org>
+ * Copyright (c) 2022-2023 Tomohiro Kusumi <tkusumi@netbsd.org>
  * Copyright (c) 2011-2022 The DragonFly Project.  All rights reserved.
  *
  * This code is derived from software contributed to The DragonFly Project
@@ -52,10 +52,8 @@
 /* Emulate INVARIANTS in FreeBSD. */
 #if 1
 #define INVARIANTS	DIAGNOSTIC
-#define __debugvar	__diagused
 #else
 #define INVARIANTS	DEBUG
-#define __debugvar	__debugused
 #endif
 
 /* DragonFly KKASSERT is NetBSD KASSERT equivalent. */
@@ -101,5 +99,8 @@ atomic_fetchadd_32(volatile uint32_t *p, uint32_t v)
 #endif
 
 #define cpu_ccfence	__insn_barrier
+
+#define kstrdup(s)	kmem_strdup(s, KM_SLEEP)
+#define kstrfree(s)	kmem_strfree(s)
 
 #endif /* !_FS_HAMMER2_COMPAT_H_ */

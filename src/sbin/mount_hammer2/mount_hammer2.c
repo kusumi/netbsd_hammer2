@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2023 Tomohiro Kusumi <tkusumi@netbsd.org>
+ * Copyright (c) 2022-2023 Tomohiro Kusumi <tkusumi@netbsd.org>
  * Copyright (c) 2011-2023 The DragonFly Project.  All rights reserved.
  * Copyright (c) 1993, 1994
  *	The Regents of the University of California.  All rights reserved.
@@ -31,7 +31,7 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/types.h>
+#include <sys/param.h>
 #include <sys/mount.h>
 
 #include <stdio.h>
@@ -123,7 +123,7 @@ mount_hammer2_parseargs(int argc, char **argv,
 		free(tmp);
 	}
 
-	args->volume = canon_dev;
+	args->fspec = canon_dev;
 	args->hflags = HMNT2_LOCAL; /* force local, not optional */
 }
 
@@ -155,11 +155,10 @@ mount_hammer2(int argc, char **argv)
 			errcause = strerror(errno);
 			break;
 		}
-		errx(1, "%s on %s: %s", args.volume, canon_dir, errcause);
+		errx(1, "%s on %s: %s", args.fspec, canon_dir, errcause);
 	}
 	if (mntflags & MNT_GETARGS) {
-		printf("hflags=0x%x, cluster_fd=%d\n",
-		    args.hflags, args.cluster_fd);
+		printf("hflags=0x%x\n", args.hflags);
 	}
 
 	return (0);

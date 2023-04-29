@@ -4,6 +4,7 @@
  */
 
 #include <sys/param.h>
+#include <sys/stdint.h>
 #ifdef _KERNEL
 #include <sys/systm.h>
 #endif
