@@ -68,6 +68,9 @@
 #define atomic_cmpset_32(ptr, old, new)	\
 	(atomic_cas_32((ptr), (old), (new)) == (old))
 
+#define atomic_cmpset_64(ptr, old, new)	\
+	(atomic_cas_64((ptr), (old), (new)) == (old))
+
 /* XXX Not atomic, but harmless with current read-only support. */
 static __inline unsigned int
 atomic_fetchadd_int(volatile unsigned int *p, unsigned int v)
@@ -88,6 +91,17 @@ atomic_fetchadd_32(volatile uint32_t *p, uint32_t v)
 	do {
 		value = *p;
 	} while (!atomic_cmpset_32(p, value, value + v));
+	return (value);
+}
+
+static __inline uint64_t
+atomic_fetchadd_64(volatile uint64_t *p, uint64_t v)
+{
+	uint64_t value;
+
+	do {
+		value = *p;
+	} while (!atomic_cmpset_64(p, value, value + v));
 	return (value);
 }
 
