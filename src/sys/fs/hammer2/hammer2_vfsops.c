@@ -72,24 +72,26 @@ typedef struct hammer2_mntlist hammer2_mntlist_t;
 static hammer2_mntlist_t hammer2_mntlist;
 
 /* global list of PFS */
-TAILQ_HEAD(hammer2_pfslist, hammer2_pfs); /* <-> hammer2_pfs::mntentry */
-typedef struct hammer2_pfslist hammer2_pfslist_t;
-static hammer2_pfslist_t hammer2_pfslist;
+hammer2_pfslist_t hammer2_pfslist;
 static hammer2_pfslist_t hammer2_spmplist;
 
-static kmutex_t hammer2_mntlk;
+kmutex_t hammer2_mntlk;
 
 static int hammer2_supported_version = HAMMER2_VOL_VERSION_DEFAULT;
 long hammer2_inode_allocs;
 long hammer2_chain_allocs;
 long hammer2_dio_allocs;
 int hammer2_dio_limit = 256;
+int hammer2_limit_scan_depth;
+long hammer2_limit_saved_chains;
 
 #define HAMMER2_SYSCTL_SUPPORTED_VERSION	1
 #define HAMMER2_SYSCTL_INODE_ALLOCS		2
 #define HAMMER2_SYSCTL_CHAIN_ALLOCS		3
 #define HAMMER2_SYSCTL_DIO_ALLOCS		4
 #define HAMMER2_SYSCTL_DIO_LIMIT		5
+#define HAMMER2_SYSCTL_LIMIT_SCAN_DEPTH	6
+#define HAMMER2_SYSCTL_LIMIT_SAVED_CHAINS	7
 
 SYSCTL_SETUP(hammer2_sysctl_create, "hammer2 sysctl")
 {
@@ -155,6 +157,24 @@ SYSCTL_SETUP(hammer2_sysctl_create, "hammer2 sysctl")
 	if (error)
 		goto fail;
 
+	error = sysctl_createv(clog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE,
+	    CTLTYPE_INT, "limit_scan_depth",
+	    SYSCTL_DESCR("Bulkfree scan depth limit"),
+	    NULL, 0, &hammer2_limit_scan_depth, 0,
+	    CTL_VFS, x, HAMMER2_SYSCTL_LIMIT_SCAN_DEPTH, CTL_EOL);
+	if (error)
+		goto fail;
+
+	error = sysctl_createv(clog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE,
+	    CTLTYPE_LONG, "limit_saved_chains",
+	    SYSCTL_DESCR("Bulkfree saved chains limit"),
+	    NULL, 0, &hammer2_limit_saved_chains, 0,
+	    CTL_VFS, x, HAMMER2_SYSCTL_LIMIT_SAVED_CHAINS, CTL_EOL);
+	if (error)
+		goto fail;
+
 	return;
 fail:
 	printf("sysctl_createv failed with error %d\n", error);
@@ -195,6 +215,9 @@ hammer2_start(struct mount *mp, int flags)
 static void
 hammer2_init(void)
 {
+	long hammer2_limit_dirty_chains; /* originally sysctl */
+	long hammer2_limit_dirty_inodes; /* originally sysctl */
+
 	hammer2_assert_clean();
 
 	hammer2_dio_limit = buf_nbuf() * 2;
@@ -216,6 +239,20 @@ hammer2_init(void)
 	TAILQ_INIT(&hammer2_mntlist);
 	TAILQ_INIT(&hammer2_pfslist);
 	TAILQ_INIT(&hammer2_spmplist);
+
+	hammer2_limit_dirty_chains = desiredvnodes / 10;
+	if (hammer2_limit_dirty_chains > HAMMER2_LIMIT_DIRTY_CHAINS)
+		hammer2_limit_dirty_chains = HAMMER2_LIMIT_DIRTY_CHAINS;
+	if (hammer2_limit_dirty_chains < 1000)
+		hammer2_limit_dirty_chains = 1000;
+
+	hammer2_limit_dirty_inodes = desiredvnodes / 25;
+	if (hammer2_limit_dirty_inodes < 100)
+		hammer2_limit_dirty_inodes = 100;
+	if (hammer2_limit_dirty_inodes > HAMMER2_LIMIT_DIRTY_INODES)
+		hammer2_limit_dirty_inodes = HAMMER2_LIMIT_DIRTY_INODES;
+
+	hammer2_limit_saved_chains = hammer2_limit_dirty_chains * 5;
 }
 
 static void
@@ -445,6 +482,8 @@ again:
 				break;
 		if (i == HAMMER2_MAXCLUSTER)
 			continue;
+
+		hammer2_vfs_sync_pmp(pmp, MNT_WAIT);
 
 		/*
 		 * Lock the inode and clean out matching chains.
@@ -705,6 +744,7 @@ next_hmp:
 		hammer2_mtx_init(&hmp->iotree_lock, "h2hmp_iotlk");
 
 		mutex_init(&hmp->vollk, MUTEX_DEFAULT, IPL_NONE);
+		mutex_init(&hmp->bflk, MUTEX_DEFAULT, IPL_NONE);
 
 		/*
 		 * vchain setup.  vchain.data is embedded.
@@ -742,6 +782,7 @@ next_hmp:
 		/* Initialize volume header related fields. */
 		KKASSERT(hmp->voldata.magic == HAMMER2_VOLUME_ID_HBO ||
 		    hmp->voldata.magic == HAMMER2_VOLUME_ID_ABO);
+		hmp->volsync = hmp->voldata;
 		/*
 		 * Must use hmp instead of volume header for these two
 		 * in order to handle volume versions transparently.
@@ -869,7 +910,7 @@ next_hmp:
 		spmp = hmp->spmp;
 		/* XXX NetBSD HAMMER2 always has HMNT2_LOCAL set, so ignore.
 		if (args->hflags & HMNT2_DEVFLAGS)
-			hprintf("Warning: mount flags pertaining to the whole "
+			hprintf("WARNING: mount flags pertaining to the whole "
 			    "device may only be specified on the first mount "
 			    "of the device: %08x\n",
 			    args->hflags & HMNT2_DEVFLAGS);
@@ -1199,8 +1240,15 @@ again:
 	hammer2_mtx_destroy(&hmp->iotree_lock);
 
 	mutex_destroy(&hmp->vollk);
+	mutex_destroy(&hmp->bflk);
 
 	free(hmp, M_HAMMER2);
+}
+
+int
+hammer2_vfs_sync_pmp(hammer2_pfs_t *pmp, int waitfor)
+{
+	return (0);
 }
 
 void

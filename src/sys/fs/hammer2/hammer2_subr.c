@@ -39,6 +39,7 @@
 #include <sys/systm.h>
 #include <sys/dirent.h>
 #include <sys/uuid.h>
+#include <sys/signalvar.h>
 
 #include "hammer2.h"
 
@@ -230,6 +231,23 @@ int
 hammer2_get_logical(void)
 {
 	return (hammer2_calc_logical(NULL, 0, NULL, NULL));
+}
+
+/*
+ * Check for pending signal to allow interruption.
+ */
+int
+hammer2_signal_check(void)
+{
+	struct lwp *l = curlwp;
+	struct proc *p = l->l_proc;
+	int sig;
+
+	mutex_enter(p->p_lock);
+	sig = sigispending(l, 0);
+	mutex_exit(p->p_lock);
+
+	return (sig);
 }
 
 const char *

@@ -376,3 +376,15 @@ void
 hammer2_io_dedup_set(hammer2_dev_t *hmp, hammer2_blockref_t *bref)
 {
 }
+
+void
+hammer2_io_dedup_delete(hammer2_dev_t *hmp, uint8_t btype,
+    hammer2_off_t data_off, unsigned int bytes)
+{
+}
+
+void
+hammer2_io_dedup_assert(hammer2_dev_t *hmp, hammer2_off_t data_off,
+    unsigned int bytes)
+{
+}
