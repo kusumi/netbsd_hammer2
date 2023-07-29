@@ -1,11 +1,8 @@
-/*-
- * SPDX-License-Identifier: BSD-3-Clause
- *
- * Copyright (c) 2022-2023 Tomohiro Kusumi <tkusumi@netbsd.org>
- * Copyright (c) 2011-2022 The DragonFly Project.  All rights reserved.
+/*
+ * Copyright (c) 2019 The DragonFly Project.  All rights reserved.
  *
  * This code is derived from software contributed to The DragonFly Project
- * by Matthew Dillon <dillon@backplane.com>
+ * by Matthew Dillon <dillon@dragonflybsd.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -35,27 +32,33 @@
  * SUCH DAMAGE.
  */
 
-#ifndef _FS_HAMMER2_MOUNT_H_
-#define _FS_HAMMER2_MOUNT_H_
+#include "hammer2.h"
 
-/* sys/sys/mount.h */
-#define MOUNT_HAMMER2	"hammer2"	/* HAMMER2 Filesystem */
+int cmd_emergency_mode(const char *sel_path __unused, int enable,
+		       int ac, const char **av)
+{
+	int error = 0;
+	int fd;
 
-/*
- * This structure is passed from userland to the kernel during the mount
- * system call.
- *
- * The fspec is formatted as '/dev/ad0s1a@LABEL', where the label is
- * the mount point under the super-root.
- */
-struct hammer2_mount_info {
-	char		*fspec;
-	int		hflags;		/* extended hammer2 mount flags */
-};
+	if (ac != 1) {
+		fprintf(stderr, "Expected <filesystem> argument\n");
+		return 1;
+	}
+	fd = open(av[0], O_RDONLY);
+	if (fd < 0) {
+		fprintf(stderr, "Unable to find \"%s\"\n", av[0]);
+		return 1;
+	}
+	if (ioctl(fd, HAMMER2IOC_EMERG_MODE, &enable) == 0) {
+		if (enable)
+			printf("Emergency mode on \"%s\" enabled\n", av[0]);
+		else
+			printf("Emergency mode on \"%s\" disabled\n", av[0]);
+	} else {
+		printf("Cannot change emerg mode: %s\n", strerror(errno));
+		error = 1;
+	}
+	close(fd);
 
-#define HMNT2_LOCAL		0x00000002
-#define HMNT2_EMERG		0x00000004
-
-#define HMNT2_DEVFLAGS		(HMNT2_LOCAL)
-
-#endif /* !_FS_HAMMER2_MOUNT_H_ */
+	return error;
+}

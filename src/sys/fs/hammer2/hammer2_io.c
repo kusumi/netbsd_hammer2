@@ -179,6 +179,7 @@ hammer2_io_getblk(hammer2_dev_t *hmp, int btype, off_t lbase, int lsize, int op)
 	KKASSERT(dio->bp == NULL);
 	lblkno = (dio->pbase - dio->dbase) / DEV_BSIZE;
 	error = bread(dio->devvp, lblkno, dio->psize, 0, &dio->bp);
+	KKASSERT(error == 0 || dio->bp == NULL);
 
 	/* XXX
 	if (dio->bp)
@@ -364,6 +365,11 @@ hammer2_io_bread(hammer2_dev_t *hmp, int btype, off_t lbase, int lsize,
 {
 	*diop = hammer2_io_getblk(hmp, btype, lbase, lsize, HAMMER2_DOP_READ);
 	return ((*diop)->error);
+}
+
+void
+hammer2_io_setdirty(hammer2_io_t *dio)
+{
 }
 
 void

@@ -116,8 +116,6 @@ hammer2_open_devvp(struct mount *mp, const hammer2_devvp_list_t *devvpl)
 			e->xflags = FREAD;
 		else
 			e->xflags = FREAD|FWRITE;
-		KKASSERT(e->xflags == FREAD);
-
 		vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
 		error = VOP_OPEN(devvp, e->xflags, FSCRED);
 		VOP_UNLOCK(devvp);
@@ -145,8 +143,6 @@ hammer2_close_devvp(const hammer2_devvp_list_t *devvpl)
 		if (e->open) {
 			devvp = e->devvp;
 			KKASSERT(devvp);
-
-			KKASSERT(e->xflags == FREAD);
 
 			if (devvp->v_type != VBAD)
 				spec_node_setmountedfs(devvp, NULL);
@@ -742,6 +738,8 @@ hammer2_get_volume(hammer2_dev_t *hmp, hammer2_off_t offset)
 
 	offset &= ~HAMMER2_OFF_MASK_RADIX;
 
+	/* locking is unneeded until volume-add support */
+	//hammer2_voldata_lock(hmp);
 	/* Do binary search if users really use this many supported volumes. */
 	for (i = 0; i < hmp->nvolumes; ++i) {
 		vol = &hmp->volumes[i];
@@ -751,6 +749,7 @@ hammer2_get_volume(hammer2_dev_t *hmp, hammer2_off_t offset)
 			break;
 		}
 	}
+	//hammer2_voldata_unlock(hmp);
 
 	if (!ret)
 		hpanic("no volume for offset %016jx", (intmax_t)offset);

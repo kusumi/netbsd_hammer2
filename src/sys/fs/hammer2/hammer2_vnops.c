@@ -343,7 +343,7 @@ hammer2_readdir(void *v)
 		goto done;
 
 	/* Use XOP for remaining entries. */
-	xop = hammer2_xop_alloc(ip);
+	xop = hammer2_xop_alloc(ip, 0);
 	xop->lkey = saveoff | HAMMER2_DIRHASH_VISIBLE;
 	hammer2_xop_start(&xop->head, &hammer2_readdir_desc);
 
@@ -447,8 +447,8 @@ hammer2_read_file(hammer2_inode_t *ip, struct uio *uio, int ioflag)
 			error = bread(ip->vp, lbn, lblksize, 0, &bp);
 		else
 			error = bread(ip->vp, lbn, lblksize, 0, &bp);
+		KKASSERT(error == 0 || bp == NULL);
 		if (error) {
-			brelse(bp, 0);
 			bp = NULL;
 			break;
 		}
@@ -536,7 +536,7 @@ hammer2_bmap(void *v)
 	if (ap->a_bnp != NULL)
 		*ap->a_bnp = -1;
 
-	xop = hammer2_xop_alloc(ip);
+	xop = hammer2_xop_alloc(ip, 0);
 	xop->lbn = ap->a_bn; /* logical block number */
 	hammer2_xop_start(&xop->head, &hammer2_bmap_desc);
 
@@ -639,7 +639,7 @@ hammer2_nresolve(void *v)
 		return (0);
 	}
 
-	xop = hammer2_xop_alloc(dip);
+	xop = hammer2_xop_alloc(dip, 0);
 	hammer2_xop_setname(&xop->head, cnp->cn_nameptr, cnp->cn_namelen);
 
 	hammer2_inode_lock(dip, HAMMER2_RESOLVE_SHARED);

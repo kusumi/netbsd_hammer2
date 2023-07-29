@@ -107,9 +107,9 @@ atomic_fetchadd_64(volatile uint64_t *p, uint64_t v)
 
 /* XXX NetBSD only has arch dependent function. */
 #if defined(__i386__) || defined(__x86_64__)
-#define cpu_spinwait()	x86_pause()
+#define cpu_pause()	x86_pause()
 #else
-#define cpu_spinwait()	do {} while (0)
+#define cpu_pause()	do {} while (0)
 #endif
 
 #define cpu_ccfence	__insn_barrier
