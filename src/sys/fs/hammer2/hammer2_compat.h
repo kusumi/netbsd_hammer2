@@ -62,6 +62,9 @@
 #define atomic_set_int(p, b)	atomic_or_uint((p), (b))
 #define atomic_clear_int(p, b)	atomic_and_uint((p), ~(b))
 
+#define atomic_set_64(p, b)	atomic_or_64((p), (b))
+#define atomic_clear_64(p, b)	atomic_and_64((p), ~(b))
+
 #define atomic_cmpset_int(ptr, old, new)	\
 	(atomic_cas_uint((ptr), (old), (new)) == (old))
 
