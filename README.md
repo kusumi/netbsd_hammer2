@@ -5,8 +5,6 @@ NetBSD [HAMMER2](https://gitweb.dragonflybsd.org/dragonfly.git/blob/HEAD:/sys/vf
 
 + HAMMER2 file system for NetBSD (currently read-only support)
 
-+ NetBSD version of https://github.com/kusumi/freebsd_hammer2
-
 ## Requirements
 
 + Recent NetBSD
@@ -36,6 +34,8 @@ NetBSD [HAMMER2](https://gitweb.dragonflybsd.org/dragonfly.git/blob/HEAD:/sys/vf
 
 ## Bugs
 
++ VOP_READDIR implementation is known to not work with some user space libraries on 32 bit platforms.
+
 + Does not compile on NetBSD/i386 due to a toolchain bug and other issues on this arch. Note that HAMMER2 implementation is not specific to certain architecture.
 
 ## Notes
@@ -43,3 +43,5 @@ NetBSD [HAMMER2](https://gitweb.dragonflybsd.org/dragonfly.git/blob/HEAD:/sys/vf
 + Tags are merely for packaging, nothing directly to do with file system version.
 
 + [makefs](https://github.com/kusumi/makefs) supports HAMMER2 image creation from a directory contents.
+
++ This repository will be abandoned once Linux or FreeBSD is stabilized with write support. NetBSD is not the main target.

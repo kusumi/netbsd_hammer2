@@ -62,9 +62,6 @@
 #define atomic_set_int(p, b)	atomic_or_uint((p), (b))
 #define atomic_clear_int(p, b)	atomic_and_uint((p), ~(b))
 
-#define atomic_set_64(p, b)	atomic_or_64((p), (b))
-#define atomic_clear_64(p, b)	atomic_and_64((p), ~(b))
-
 #define atomic_cmpset_int(ptr, old, new)	\
 	(atomic_cas_uint((ptr), (old), (new)) == (old))
 
@@ -74,7 +71,6 @@
 #define atomic_cmpset_64(ptr, old, new)	\
 	(atomic_cas_64((ptr), (old), (new)) == (old))
 
-/* XXX Not atomic, but harmless with current read-only support. */
 static __inline unsigned int
 atomic_fetchadd_int(volatile unsigned int *p, unsigned int v)
 {

@@ -35,22 +35,17 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/param.h>
-#include <sys/systm.h>
-#include <sys/buf.h>
+#include "hammer2.h"
+
 #include <sys/dirent.h>
-#include <sys/malloc.h>
 #include <sys/namei.h>
 #include <sys/uio.h>
 #include <sys/unistd.h>
-#include <sys/vnode.h>
 
 #include <miscfs/genfs/genfs.h>
 #include <miscfs/genfs/genfs_node.h>
 #include <miscfs/specfs/specdev.h>
 #include <miscfs/fifofs/fifo.h>
-
-#include "hammer2.h"
 
 static int
 hammer2_inactive(void *v)
@@ -405,6 +400,10 @@ done:
 
 	if (ap->a_eofflag)
 		*ap->a_eofflag = eofflag;
+	/*
+	 * XXX uio_offset value of 0x7fffffffffffffff known to not work with
+	 * some user space libraries on 32 bit platforms.
+	 */
 	uio->uio_offset = saveoff & ~HAMMER2_DIRHASH_VISIBLE;
 
 	if (error && cookie_index == 0) {

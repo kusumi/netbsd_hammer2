@@ -35,19 +35,15 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/param.h>
-#include <sys/kernel.h>
+#include "hammer2.h"
+#include "hammer2_mount.h"
+
 #include <sys/module.h>
-#include <sys/systm.h>
 #include <sys/sysctl.h>
-#include <sys/mutex.h>
 
 #include <miscfs/genfs/genfs.h>
 #include <miscfs/genfs/genfs_node.h>
 #include <miscfs/specfs/specdev.h> /* for v_rdev */
-
-#include "hammer2.h"
-#include "hammer2_mount.h"
 
 MODULE(MODULE_CLASS_VFS, hammer2, NULL);
 
@@ -286,7 +282,7 @@ hammer2_pfsalloc(hammer2_chain_t *chain, const hammer2_inode_data_t *ripdata,
 {
 	hammer2_pfs_t *pmp = NULL;
 	hammer2_inode_t *iroot;
-	int j;
+	int i, j;
 
 	KASSERTMSG(force_local, "only local mount allowed");
 
@@ -318,8 +314,10 @@ hammer2_pfsalloc(hammer2_chain_t *chain, const hammer2_inode_data_t *ripdata,
 		hammer2_spin_init(&pmp->inum_spin, "h2pmp_inosp");
 		hammer2_spin_init(&pmp->lru_spin, "h2pmp_lrusp");
 		hammer2_spin_init(&pmp->list_spin, "h2pmp_lssp");
-		mutex_init(&pmp->xop_lock, MUTEX_DEFAULT, IPL_NONE);
-		cv_init(&pmp->xop_cv, "h2pmp_xopcv");
+		for (i = 0; i < HAMMER2_IHASH_SIZE; i++) {
+			mutex_init(&pmp->xop_lock[i], MUTEX_DEFAULT, IPL_NONE);
+			cv_init(&pmp->xop_cv[i], "h2pmp_xopcv");
+		}
 		mutex_init(&pmp->trans_lock, MUTEX_DEFAULT, IPL_NONE);
 		cv_init(&pmp->trans_cv, "h2pmp_trcv");
 		RB_INIT(&pmp->inum_tree);
@@ -453,8 +451,10 @@ hammer2_pfsfree(hammer2_pfs_t *pmp)
 		hammer2_spin_destroy(&pmp->inum_spin);
 		hammer2_spin_destroy(&pmp->lru_spin);
 		hammer2_spin_destroy(&pmp->list_spin);
-		mutex_destroy(&pmp->xop_lock);
-		cv_destroy(&pmp->xop_cv);
+		for (i = 0; i < HAMMER2_IHASH_SIZE; i++) {
+			mutex_destroy(&pmp->xop_lock[i]);
+			cv_destroy(&pmp->xop_cv[i]);
+		}
 		mutex_destroy(&pmp->trans_lock);
 		cv_destroy(&pmp->trans_cv);
 		hashdone(pmp->ipdep_lists, HASH_LIST, pmp->ipdep_mask);
