@@ -3,7 +3,7 @@ NetBSD [HAMMER2](https://gitweb.dragonflybsd.org/dragonfly.git/blob/HEAD:/sys/vf
 
 ## About
 
-+ HAMMER2 file system for NetBSD (currently read-only support)
++ HAMMER2 file system for NetBSD
 
 ## Requirements
 
@@ -34,7 +34,7 @@ NetBSD [HAMMER2](https://gitweb.dragonflybsd.org/dragonfly.git/blob/HEAD:/sys/vf
 
 ## Bugs
 
-+ VOP_READDIR implementation is known to not work with some user space libraries on 32 bit platforms.
++ VOP\_READDIR implementation is known to not work with some user space libraries on 32 bit platforms.
 
 + Does not compile on NetBSD/i386 due to a toolchain bug and other issues on this arch. Note that HAMMER2 implementation is not specific to certain architecture.
 

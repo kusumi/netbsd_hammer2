@@ -280,7 +280,7 @@ hammer2_verify_volumes_common(const hammer2_volume_t *volumes)
 		}
 		if (vol->size > (hammer2_off_t)mediasize) {
 			hprintf("%s's size %016jx exceeds device size %016jx\n",
-			    path, (intmax_t)vol->size, mediasize);
+			    path, (intmax_t)vol->size, (intmax_t)mediasize);
 			return (EINVAL);
 		}
 	}
@@ -384,7 +384,7 @@ hammer2_verify_volumes_2(const hammer2_volume_t *volumes,
 	if (rootvoldata->total_size != total_size) {
 		hprintf("total size %016jx does not equal sum of volumes "
 		    "%016jx\n",
-		    rootvoldata->total_size, total_size);
+		    (intmax_t)rootvoldata->total_size, (intmax_t)total_size);
 		return (EINVAL);
 	}
 	for (i = 0; i < nvolumes; ++i) {
@@ -414,7 +414,7 @@ hammer2_verify_volumes_2(const hammer2_volume_t *volumes,
 		if (vol->offset & HAMMER2_FREEMAP_LEVEL1_MASK) {
 			hprintf("%s's offset %016jx not %016jx aligned\n",
 			    path, (intmax_t)vol->offset,
-			    HAMMER2_FREEMAP_LEVEL1_SIZE);
+			    (intmax_t)HAMMER2_FREEMAP_LEVEL1_SIZE);
 			return (EINVAL);
 		}
 		/* Check vs previous volume. */
@@ -453,8 +453,7 @@ hammer2_verify_volumes_2(const hammer2_volume_t *volumes,
 		} else { /* last */
 			if (vol->size & HAMMER2_VOLUME_ALIGNMASK64) {
 				hprintf("%s's size is not %016jx aligned\n",
-				    path,
-				    (intmax_t)HAMMER2_VOLUME_ALIGN);
+				    path, (intmax_t)HAMMER2_VOLUME_ALIGN);
 				return (EINVAL);
 			}
 		}
@@ -601,7 +600,7 @@ hammer2_print_uuid_mismatch(struct uuid *uuid1, struct uuid *uuid2,
 int
 hammer2_init_volumes(const hammer2_devvp_list_t *devvpl,
     hammer2_volume_t *volumes, hammer2_volume_data_t *rootvoldata,
-    struct vnode **rootvoldevvp)
+    int *rootvolzone, struct vnode **rootvoldevvp)
 {
 	hammer2_volume_data_t *voldata;
 	hammer2_volume_t *vol;
@@ -609,8 +608,7 @@ hammer2_init_volumes(const hammer2_devvp_list_t *devvpl,
 	struct vnode *devvp;
 	struct uuid fsid, fstype;
 	const char *path;
-	int i, error = 0, v = -1, nvolumes = 0;
-	int zone __diagused;
+	int i, zone, error = 0, v = -1, nvolumes = 0;
 
 	for (i = 0; i < HAMMER2_MAX_VOLUMES; ++i) {
 		vol = &volumes[i];
@@ -701,6 +699,7 @@ hammer2_init_volumes(const hammer2_devvp_list_t *devvpl,
 		vol->size = voldata->volu_size;
 		if (vol->id == HAMMER2_ROOT_VOLUME) {
 			bcopy(voldata, rootvoldata, sizeof(*rootvoldata));
+			*rootvolzone = zone;
 			KKASSERT(*rootvoldevvp == NULL);
 			*rootvoldevvp = devvp;
 		}

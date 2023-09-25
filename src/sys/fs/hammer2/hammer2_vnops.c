@@ -89,6 +89,14 @@ hammer2_reclaim(void *v)
 	return (0);
 }
 
+#if 0
+static int
+hammer2_fsync(void *v)
+{
+	return (EOPNOTSUPP);
+}
+#endif
+
 static int
 hammer2_check_possible(struct vnode *vp, hammer2_inode_t *ip, mode_t mode)
 {
@@ -205,14 +213,16 @@ hammer2_setattr(void *v)
 	    || vap->va_blocksize != (long)VNOVAL
 	    || vap->va_rdev != (dev_t)VNOVAL
 	    || vap->va_bytes != (u_quad_t)VNOVAL
-	    || vap->va_gen != (u_long)VNOVAL
-	    || vap->va_flags != (u_long)VNOVAL
+	    || vap->va_gen != (u_long)VNOVAL)
+		return (EINVAL);
+
+	if (vap->va_flags != (u_long)VNOVAL
 	    || vap->va_uid != (uid_t)VNOVAL
 	    || vap->va_gid != (gid_t)VNOVAL
 	    || vap->va_atime.tv_sec != (time_t)VNOVAL
 	    || vap->va_mtime.tv_sec != (time_t)VNOVAL
 	    || vap->va_mode != (mode_t)VNOVAL)
-		return (EROFS);
+		return (EOPNOTSUPP);
 
 	if (vap->va_size != (u_quad_t)VNOVAL) {
 		switch (vp->v_type) {
@@ -220,7 +230,9 @@ hammer2_setattr(void *v)
 			return (EISDIR);
 		case VLNK:
 		case VREG:
-			return (EROFS);
+			if (vp->v_mount->mnt_flag & MNT_RDONLY)
+				return (EROFS);
+			return (0); /* implicit-fallthrough */
 		case VCHR:
 		case VBLK:
 		case VSOCK:
@@ -507,6 +519,14 @@ hammer2_read(void *v)
 	return (hammer2_read_file(ip, ap->a_uio, ap->a_ioflag));
 }
 
+#if 0
+static int
+hammer2_write(void *v)
+{
+	return (EOPNOTSUPP);
+}
+#endif
+
 static int
 hammer2_bmap(void *v)
 {
@@ -677,6 +697,56 @@ hammer2_nresolve(void *v)
 
 	return (error);
 }
+
+#if 0
+static int
+hammer2_mknod(void *v)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+hammer2_mkdir(void *v)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+hammer2_create(void *v)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+hammer2_rmdir(void *v)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+hammer2_remove(void *v)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+hammer2_rename(void *v)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+hammer2_link(void *v)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+hammer2_symlink(void *v)
+{
+	return (EOPNOTSUPP);
+}
+#endif
 
 static int
 hammer2_open(void *v)

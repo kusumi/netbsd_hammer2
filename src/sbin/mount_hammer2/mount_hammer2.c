@@ -98,10 +98,6 @@ mount_hammer2_parseargs(int argc, char **argv,
 		/* not reached */
 	}
 
-	/* If MNT_GETARGS is specified, it should be the only flag. */
-	if ((*mntflags & MNT_GETARGS) == 0)
-		*mntflags = MNT_RDONLY; /* currently write unsupported */
-
 	/* pathadj doesn't work with multi-volumes. */
 	strlcpy(canon_dev, argv[0], MAXPATHLEN);
 	pathadj(argv[1], canon_dir);
@@ -157,9 +153,8 @@ mount_hammer2(int argc, char **argv)
 		}
 		errx(1, "%s on %s: %s", args.fspec, canon_dir, errcause);
 	}
-	if (mntflags & MNT_GETARGS) {
+	if (mntflags & MNT_GETARGS)
 		printf("hflags=0x%x\n", args.hflags);
-	}
 
 	return (0);
 }
