@@ -47,9 +47,7 @@
 static int
 hammer2_lookup_device(struct mount *mp, const char *path, struct vnode **devvpp)
 {
-	struct lwp *l = curlwp;
 	struct vnode *devvp = NULL;
-	mode_t accessmode;
 	int error;
 
 	KKASSERT(path);
@@ -74,14 +72,8 @@ hammer2_lookup_device(struct mount *mp, const char *path, struct vnode **devvpp)
 		return (ENXIO);
 	}
 
-	accessmode = VREAD;
-	if ((mp->mnt_flag & MNT_RDONLY) == 0)
-		accessmode |= VWRITE;
-	vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
-	error = kauth_authorize_system(l->l_cred, KAUTH_SYSTEM_MOUNT,
-	    KAUTH_REQ_SYSTEM_MOUNT_DEVICE, mp, devvp, KAUTH_ARG(accessmode));
-	VOP_UNLOCK(devvp);
-
+	error = hammer2_access_devvp(mp, devvp,
+	    (mp->mnt_flag & MNT_RDONLY) != 0);
 	if (error) {
 		hprintf("%s kauth_authorize_system failed %d\n", path, error);
 		vrele(devvp);
@@ -751,4 +743,19 @@ hammer2_get_volume(hammer2_dev_t *hmp, hammer2_off_t offset)
 	KKASSERT(ret->dev->path);
 
 	return (ret);
+}
+
+int
+hammer2_access_devvp(struct mount *mp, struct vnode *devvp, int rdonly)
+{
+	struct lwp *l = curlwp;
+	mode_t accessmode = rdonly ? VREAD : VREAD | VWRITE;
+	int error;
+
+	vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
+	error = kauth_authorize_system(l->l_cred, KAUTH_SYSTEM_MOUNT,
+	    KAUTH_REQ_SYSTEM_MOUNT_DEVICE, mp, devvp, KAUTH_ARG(accessmode));
+	VOP_UNLOCK(devvp);
+
+	return (error);
 }
