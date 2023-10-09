@@ -230,6 +230,15 @@ hammer2_get_logical(void)
 	return (hammer2_calc_logical(NULL, 0, NULL, NULL));
 }
 
+void
+hammer2_update_time(uint64_t *timep)
+{
+	struct timespec ts;
+
+	vfs_timestamp(&ts);
+	*timep = (unsigned long)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
 /*
  * Increment iostat, usually without any lock taken.
  */

@@ -70,7 +70,7 @@ mount_hammer2_parseargs(int argc, char **argv,
 	char *canon_dev, char *canon_dir)
 {
 	mntoptparse_t mp;
-	char *tmp;
+	char *val;
 	int ch;
 
 	memset(args, 0, sizeof(*args));
@@ -104,23 +104,22 @@ mount_hammer2_parseargs(int argc, char **argv,
 
 	/* Automatically add @DATA if no label specified. */
 	if (strchr(canon_dev, '@') == NULL) {
-		if (asprintf(&tmp, "%s@DATA", canon_dev) == -1)
+		if (asprintf(&val, "%s@DATA", canon_dev) == -1)
 			err(1, "asprintf");
-		strlcpy(canon_dev, tmp, MAXPATHLEN);
-		free(tmp);
+		strlcpy(canon_dev, val, MAXPATHLEN);
+		free(val);
 	}
 
 	/* Prefix if necessary. */
 	if (!strchr(canon_dev, ':') && canon_dev[0] != '/' &&
 	    canon_dev[0] != '@') {
-		if (asprintf(&tmp, "/dev/%s", canon_dev) == -1)
+		if (asprintf(&val, "/dev/%s", canon_dev) == -1)
 			err(1, "asprintf");
-		strlcpy(canon_dev, tmp, MAXPATHLEN);
-		free(tmp);
+		strlcpy(canon_dev, val, MAXPATHLEN);
+		free(val);
 	}
 
 	args->fspec = canon_dev;
-	args->hflags = HMNT2_LOCAL; /* force local, not optional */
 }
 
 int
