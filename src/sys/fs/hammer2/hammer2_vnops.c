@@ -57,12 +57,44 @@ hammer2_inactive(void *v)
 	struct vnode *vp = ap->a_vp;
 	hammer2_inode_t *ip = VTOI(vp);
 
+	/* degenerate case */
 	if (ip->meta.mode == 0) {
 		/*
 		 * If we are done with the inode, reclaim it
 		 * so that it can be reused immediately.
 		 */
 		*ap->a_recycle = true;
+		return (0);
+	}
+
+	/*
+	 * Aquire the inode lock to interlock against vp updates via
+	 * the inode path and file deletions and such (which can be
+	 * namespace-only operations that might not hold the vnode).
+	 */
+	hammer2_inode_lock(ip, 0);
+	if (ip->flags & HAMMER2_INODE_ISUNLINKED) {
+		/*
+		 * If the inode has been unlinked we can throw away all
+		 * buffers (dirty or not) and clean the file out.
+		 *
+		 * Because vrecycle() calls are not guaranteed, try to
+		 * dispose of the inode as much as possible right here.
+		 */
+		uvm_vnp_setsize(vp, 0);
+		vtruncbuf(vp, 0, 0, 0); /* NetBSD doesn't take blksize */
+
+		/* Delete the file on-media. */
+		if ((ip->flags & HAMMER2_INODE_DELETING) == 0) {
+			atomic_set_int(&ip->flags, HAMMER2_INODE_DELETING);
+			hammer2_inode_delayed_sideq(ip);
+		}
+		hammer2_inode_unlock(ip);
+
+		/* Recycle immediately if possible. */
+		*ap->a_recycle = true;
+	} else {
+		hammer2_inode_unlock(ip);
 	}
 
 	return (0);
@@ -77,6 +109,12 @@ hammer2_reclaim(void *v)
 	struct vnode *vp = ap->a_vp;
 	hammer2_inode_t *ip = VTOI(vp);
 
+	if (ip == NULL)
+		return (0);
+
+	/* The inode lock is required to disconnect it. */
+	hammer2_inode_lock(ip, 0);
+
 	VOP_UNLOCK(vp);
 
 	genfs_node_destroy(vp);
@@ -84,18 +122,104 @@ hammer2_reclaim(void *v)
 	vp->v_data = NULL;
 	ip->vp = NULL;
 
-	hammer2_inode_drop(ip);
+	/*
+	 * Delete the file on-media.  This should have been handled by the
+	 * inactivation.  The operation is likely still queued on the inode
+	 * though so only complain if the stars don't align.
+	 */
+	if ((ip->flags & (HAMMER2_INODE_ISUNLINKED | HAMMER2_INODE_DELETING)) ==
+	    HAMMER2_INODE_ISUNLINKED) {
+		atomic_set_int(&ip->flags, HAMMER2_INODE_DELETING);
+		hammer2_inode_delayed_sideq(ip);
+		hprintf("inum %016jx unlinked but not disposed\n",
+		    (intmax_t)ip->meta.inum);
+	}
+	hammer2_inode_unlock(ip);
 
+	/*
+	 * Modified inodes will already be on SIDEQ or SYNCQ, no further
+	 * action is needed.
+	 *
+	 * We cannot safely synchronize the inode from inside the reclaim
+	 * due to potentially deep locks held as-of when the reclaim occurs.
+	 * Interactions and potential deadlocks abound.  We also can't do it
+	 * here without desynchronizing from the related directory entrie(s).
+	 */
+	hammer2_inode_drop(ip); /* vp ref */
+
+	/*
+	 * XXX handle background sync when ip dirty, kernel will no longer
+	 * notify us regarding this inode because there is no longer a
+	 * vnode attached to it.
+	 */
 	return (0);
 }
 
-#if 0
+/*
+ * Currently this function synchronizes the front-end inode state to the
+ * backend chain topology, then flushes the inode's chain and sub-topology
+ * to backend media.  This function does not flush the root topology down to
+ * the inode.
+ */
 static int
 hammer2_fsync(void *v)
 {
-	return (EOPNOTSUPP);
+	struct vop_fsync_args /* {
+		struct vnode *a_vp;
+		kauth_cred_t a_cred;
+		int a_flags;
+		off_t a_offlo;
+		off_t a_offhi;
+	} */ *ap = v;
+	struct vnode *vp = ap->a_vp;
+	hammer2_inode_t *ip = VTOI(vp);
+	int error1 = 0, error2;
+
+	hammer2_trans_init(ip->pmp, 0);
+
+	/*
+	 * Flush dirty buffers in the file's logical buffer cache.
+	 * It is best to wait for the strategy code to commit the
+	 * buffers to the device's backing buffer cache before
+	 * then trying to flush the inode.
+	 *
+	 * This should be quick, but certain inode modifications cached
+	 * entirely in the hammer2_inode structure may not trigger a
+	 * buffer read until the flush so the fsync can wind up also
+	 * doing scattered reads.
+	 */
+	/*
+	 * Flush all dirty buffers associated with a vnode.
+	 */
+	if (vp->v_type == VBLK)
+		error1 = spec_fsync(v);
+	else
+		error1 = vflushbuf(vp, ap->a_flags);
+	if (error1)
+		goto fail;
+
+	/* Flush any inode changes. */
+	hammer2_inode_lock(ip, 0);
+	if (ip->flags & (HAMMER2_INODE_RESIZED|HAMMER2_INODE_MODIFIED))
+		error1 = hammer2_inode_chain_sync(ip);
+
+	/*
+	 * Flush dirty chains related to the inode.
+	 *
+	 * NOTE! We are not in a flush transaction.  The inode remains on
+	 *	 the sideq so the filesystem syncer can synchronize it to
+	 *	 the volume root.
+	 */
+	error2 = hammer2_inode_chain_flush(ip, HAMMER2_XOP_INODE_STOP);
+	if (error2)
+		error1 = error2;
+
+	hammer2_inode_unlock(ip);
+fail:
+	hammer2_trans_done(ip->pmp, 0);
+
+	return (error1);
 }
-#endif
 
 static int
 hammer2_check_possible(struct vnode *vp, hammer2_inode_t *ip, mode_t mode)
@@ -599,22 +723,25 @@ hammer2_nresolve(void *v)
 	} */ *ap = v;
 	struct vnode *vp, *dvp = ap->a_dvp;
 	struct componentname *cnp = ap->a_cnp;
+	kauth_cred_t cred = cnp->cn_cred;
 	hammer2_xop_nresolve_t *xop;
 	hammer2_inode_t *ip, *dip = VTOI(dvp);
-	int error;
+	int nameiop, error;
 
 	KASSERT(VOP_ISLOCKED(dvp));
 	KKASSERT(ap->a_vpp);
 	*ap->a_vpp = NULL;
 
+	nameiop = cnp->cn_nameiop;
+
 	/* Check accessibility of directory. */
-	error = VOP_ACCESS(dvp, VEXEC, cnp->cn_cred);
+	error = VOP_ACCESS(dvp, VEXEC, cred);
 	if (error)
 		return (error);
 
 	if ((cnp->cn_flags & ISLASTCN) &&
 	    (dvp->v_mount->mnt_flag & MNT_RDONLY) &&
-	    (cnp->cn_nameiop == DELETE || cnp->cn_nameiop == RENAME))
+	    (nameiop == DELETE || nameiop == RENAME))
 		return (EROFS);
 
 	/*
@@ -624,7 +751,7 @@ hammer2_nresolve(void *v)
 	 * check the name cache to see if the directory/name pair
 	 * we are looking for is known already.
 	 */
-	if (cache_lookup(dvp, cnp->cn_nameptr, cnp->cn_namelen, cnp->cn_nameiop,
+	if (cache_lookup(dvp, cnp->cn_nameptr, cnp->cn_namelen, nameiop,
 	    cnp->cn_flags, NULL, ap->a_vpp)) {
 		if (*ap->a_vpp == NULLVP)
 			return (ENOENT);
@@ -638,7 +765,7 @@ hammer2_nresolve(void *v)
 
 	/* NetBSD needs "." and ".." handling. */
 	if (cnp->cn_flags & ISDOTDOT) {
-		if ((cnp->cn_flags & ISLASTCN) && cnp->cn_nameiop == RENAME)
+		if ((cnp->cn_flags & ISLASTCN) && nameiop == RENAME)
 			return (EINVAL);
 		/* NetBSD requires unlocked vnode. */
 		error = VFS_VGET(dip->pmp->mp, dip->meta.iparent, LK_NONE, &vp);
@@ -649,9 +776,9 @@ hammer2_nresolve(void *v)
 		    cnp->cn_flags);
 		return (0);
 	} else if (cnp->cn_namelen == 1 && cnp->cn_nameptr[0] == '.') {
-		if ((cnp->cn_flags & ISLASTCN) && cnp->cn_nameiop == RENAME)
+		if ((cnp->cn_flags & ISLASTCN) && nameiop == RENAME)
 			return (EISDIR);
-		vref(dvp); /* We want ourself, i.e. ".". */
+		vref(dvp); /* we want ourself, ie "." */
 		*ap->a_vpp = dvp;
 		cache_enter(dvp, dvp, cnp->cn_nameptr, cnp->cn_namelen,
 		    cnp->cn_flags);
@@ -674,79 +801,703 @@ hammer2_nresolve(void *v)
 
 	if (ip) {
 		/* NetBSD requires unlocked vnode. */
-		error = hammer2_igetv(dip->pmp->mp, ip, LK_NONE, &vp);
+		error = hammer2_igetv(ip, LK_NONE, &vp);
 		if (error == 0) {
-			*ap->a_vpp = vp;
-			cache_enter(dvp, vp, cnp->cn_nameptr, cnp->cn_namelen,
-			    cnp->cn_flags);
-		} else if (error == ENOENT) {
-			cache_enter(dvp, NULLVP, cnp->cn_nameptr, cnp->cn_namelen,
-			    cnp->cn_flags);
+			if (nameiop == DELETE && (cnp->cn_flags & ISLASTCN)) {
+				error = VOP_ACCESS(dvp, VWRITE, cred);
+				if (error) {
+					vrele(vp);
+					hammer2_inode_unlock(ip);
+					goto out;
+				}
+				*ap->a_vpp = vp;
+			} else if (nameiop == RENAME &&
+			    (cnp->cn_flags & ISLASTCN)) {
+				error = VOP_ACCESS(dvp, VWRITE, cred);
+				if (error) {
+					vrele(vp);
+					hammer2_inode_unlock(ip);
+					goto out;
+				}
+				*ap->a_vpp = vp;
+			} else {
+				*ap->a_vpp = vp;
+				cache_enter(dvp, vp, cnp->cn_nameptr,
+				    cnp->cn_namelen, cnp->cn_flags);
+			}
 		}
 		hammer2_inode_unlock(ip);
 	} else {
-		cache_enter(dvp, NULLVP, cnp->cn_nameptr, cnp->cn_namelen,
-		    cnp->cn_flags);
-		if ((cnp->cn_flags & ISLASTCN) &&
-		    (cnp->cn_nameiop == CREATE || cnp->cn_nameiop == RENAME))
-			error = EROFS;
-		else
+		if ((nameiop == CREATE || nameiop == RENAME) &&
+		    (cnp->cn_flags & ISLASTCN)) {
+			error = VOP_ACCESS(dvp, VWRITE, cred);
+			if (error)
+				goto out;
+			error = EJUSTRETURN;
+		} else {
+			if (nameiop != CREATE)
+				cache_enter(dvp, NULLVP, cnp->cn_nameptr,
+				    cnp->cn_namelen, cnp->cn_flags);
 			error = ENOENT;
+		}
 	}
+out:
 	hammer2_xop_retire(&xop->head, HAMMER2_XOPMASK_VOP);
 
 	return (error);
 }
 
-#if 0
 static int
 hammer2_mknod(void *v)
 {
-	return (EOPNOTSUPP);
+	struct vop_mknod_v3_args /* {
+		struct vnode *a_dvp;
+		struct vnode **a_vpp;
+		struct componentname *a_cnp;
+		struct vattr *a_vap;
+	} */ *ap = v;
+	struct componentname *cnp = ap->a_cnp;
+	struct vnode *dvp = ap->a_dvp;
+	struct vnode *vp;
+	hammer2_inode_t *dip, *nip;
+	hammer2_tid_t inum;
+	uint64_t mtime;
+	int error;
+
+	dip = VTOI(dvp);
+	if (dip->pmp->rdonly || (dip->pmp->flags & HAMMER2_PMPF_EMERG))
+		return (EROFS);
+	if (hammer2_vfs_enospace(dip, 0, cnp->cn_cred) > 1)
+		return (ENOSPC);
+
+	hammer2_trans_init(dip->pmp, 0);
+
+	/*
+	 * Create the device inode and then create the directory entry.
+	 * dip must be locked before nip to avoid deadlock.
+	 */
+	inum = hammer2_trans_newinum(dip->pmp);
+
+	hammer2_inode_lock(dip, 0);
+	nip = hammer2_inode_create_normal(dip, ap->a_vap, cnp->cn_cred, inum,
+	    &error);
+	if (error)
+		error = hammer2_error_to_errno(error);
+	else
+		error = hammer2_dirent_create(dip, cnp->cn_nameptr,
+		    cnp->cn_namelen, nip->meta.inum, nip->meta.type);
+	if (error) {
+		if (nip) {
+			hammer2_inode_unlink_finisher(nip, NULL);
+			hammer2_inode_unlock(nip);
+			nip = NULL;
+		}
+		*ap->a_vpp = NULL;
+	} else {
+		/*
+		 * inode_depend() must occur before the igetv() because
+		 * the igetv() can temporarily release the inode lock.
+		 * NetBSD VFS wants filesystem to use vcache_new() here.
+		 */
+		hammer2_inode_depend(dip, nip); /* before igetv */
+		error = hammer2_igetv(nip, LK_EXCLUSIVE, &vp);
+		if (error == 0) {
+			*ap->a_vpp = vp;
+			cache_enter(dvp, vp, cnp->cn_nameptr, cnp->cn_namelen,
+			    cnp->cn_flags);
+			hammer2_inode_vhold(nip);
+		}
+		hammer2_inode_unlock(nip);
+	}
+
+	/*
+	 * Update dip's mtime.
+	 * We can use a shared inode lock and allow the meta.mtime update
+	 * SMP race.  hammer2_inode_modify() is MPSAFE w/a shared lock.
+	 */
+	if (error == 0) {
+		/*hammer2_inode_lock(dip, HAMMER2_RESOLVE_SHARED);*/
+		hammer2_update_time(&mtime);
+		hammer2_inode_modify(dip);
+		dip->meta.mtime = mtime;
+		/*hammer2_inode_unlock(dip);*/
+	}
+	hammer2_inode_unlock(dip);
+
+	hammer2_trans_done(dip->pmp, HAMMER2_TRANS_SIDEQ);
+
+	vp = *ap->a_vpp;
+	if (error) {
+		if (vp)
+			vput(vp);
+	} else {
+		if (vp)
+			VOP_UNLOCK(vp);
+	}
+	return (error);
 }
 
 static int
 hammer2_mkdir(void *v)
 {
-	return (EOPNOTSUPP);
+	struct vop_mkdir_v3_args /* {
+		struct vnode *a_dvp;
+		struct vnode **a_vpp;
+		struct componentname *a_cnp;
+		struct vattr *a_vap;
+	} */ *ap = v;
+	struct componentname *cnp = ap->a_cnp;
+	struct vnode *dvp = ap->a_dvp;
+	struct vnode *vp;
+	hammer2_inode_t *dip, *nip;
+	hammer2_tid_t inum;
+	uint64_t mtime;
+	int error;
+
+	dip = VTOI(dvp);
+	if (dip->pmp->rdonly || (dip->pmp->flags & HAMMER2_PMPF_EMERG))
+		return (EROFS);
+	if (hammer2_vfs_enospace(dip, 0, cnp->cn_cred) > 1)
+		return (ENOSPC);
+
+	hammer2_trans_init(dip->pmp, 0);
+
+	/*
+	 * Create the directory inode and then create the directory entry.
+	 * dip must be locked before nip to avoid deadlock.
+	 */
+	inum = hammer2_trans_newinum(dip->pmp);
+
+	hammer2_inode_lock(dip, 0);
+	nip = hammer2_inode_create_normal(dip, ap->a_vap, cnp->cn_cred, inum,
+	    &error);
+	if (error)
+		error = hammer2_error_to_errno(error);
+	else
+		error = hammer2_dirent_create(dip, cnp->cn_nameptr,
+		    cnp->cn_namelen, nip->meta.inum, nip->meta.type);
+	if (error) {
+		if (nip) {
+			hammer2_inode_unlink_finisher(nip, NULL);
+			hammer2_inode_unlock(nip);
+			nip = NULL;
+		}
+		*ap->a_vpp = NULL;
+	} else {
+		/*
+		 * inode_depend() must occur before the igetv() because
+		 * the igetv() can temporarily release the inode lock.
+		 * NetBSD VFS wants filesystem to use vcache_new() here.
+		 */
+		hammer2_inode_depend(dip, nip); /* before igetv */
+		error = hammer2_igetv(nip, LK_EXCLUSIVE, &vp);
+		if (error == 0) {
+			*ap->a_vpp = vp;
+			cache_enter(dvp, vp, cnp->cn_nameptr, cnp->cn_namelen,
+			    cnp->cn_flags);
+			hammer2_inode_vhold(nip);
+		}
+		hammer2_inode_unlock(nip);
+	}
+
+	/*
+	 * Update dip's mtime.
+	 * We can use a shared inode lock and allow the meta.mtime update
+	 * SMP race.  hammer2_inode_modify() is MPSAFE w/a shared lock.
+	 */
+	if (error == 0) {
+		/*hammer2_inode_lock(dip, HAMMER2_RESOLVE_SHARED);*/
+		hammer2_update_time(&mtime);
+		hammer2_inode_modify(dip);
+		dip->meta.mtime = mtime;
+		/*hammer2_inode_unlock(dip);*/
+	}
+	hammer2_inode_unlock(dip);
+
+	hammer2_trans_done(dip->pmp, HAMMER2_TRANS_SIDEQ);
+
+	vp = *ap->a_vpp;
+	if (error) {
+		if (vp)
+			vput(vp);
+	} else {
+		if (vp)
+			VOP_UNLOCK(vp);
+	}
+	return (error);
 }
 
 static int
 hammer2_create(void *v)
 {
-	return (EOPNOTSUPP);
+	struct vop_create_v3_args /* {
+		struct vnode *a_dvp;
+		struct vnode **a_vpp;
+		struct componentname *a_cnp;
+		struct vattr *a_vap;
+	} */ *ap = v;
+	struct componentname *cnp = ap->a_cnp;
+	struct vnode *dvp = ap->a_dvp;
+	struct vnode *vp;
+	hammer2_inode_t *dip, *nip;
+	hammer2_tid_t inum;
+	uint64_t mtime;
+	int error;
+
+	dip = VTOI(dvp);
+	if (dip->pmp->rdonly || (dip->pmp->flags & HAMMER2_PMPF_EMERG))
+		return (EROFS);
+	if (hammer2_vfs_enospace(dip, 0, cnp->cn_cred) > 1)
+		return (ENOSPC);
+
+	hammer2_trans_init(dip->pmp, 0);
+
+	/*
+	 * Create the regular file inode and then create the directory entry.
+	 * dip must be locked before nip to avoid deadlock.
+	 */
+	inum = hammer2_trans_newinum(dip->pmp);
+
+	hammer2_inode_lock(dip, 0);
+	nip = hammer2_inode_create_normal(dip, ap->a_vap, cnp->cn_cred, inum,
+	    &error);
+	if (error)
+		error = hammer2_error_to_errno(error);
+	else
+		error = hammer2_dirent_create(dip, cnp->cn_nameptr,
+		    cnp->cn_namelen, nip->meta.inum, nip->meta.type);
+	if (error) {
+		if (nip) {
+			hammer2_inode_unlink_finisher(nip, NULL);
+			hammer2_inode_unlock(nip);
+			nip = NULL;
+		}
+		*ap->a_vpp = NULL;
+	} else {
+		/*
+		 * inode_depend() must occur before the igetv() because
+		 * the igetv() can temporarily release the inode lock.
+		 * NetBSD VFS wants filesystem to use vcache_new() here.
+		 */
+		hammer2_inode_depend(dip, nip); /* before igetv */
+		error = hammer2_igetv(nip, LK_EXCLUSIVE, &vp);
+		if (error == 0) {
+			*ap->a_vpp = vp;
+			cache_enter(dvp, vp, cnp->cn_nameptr, cnp->cn_namelen,
+			    cnp->cn_flags);
+			hammer2_inode_vhold(nip);
+		}
+		hammer2_inode_unlock(nip);
+	}
+
+	/*
+	 * Update dip's mtime.
+	 * We can use a shared inode lock and allow the meta.mtime update
+	 * SMP race.  hammer2_inode_modify() is MPSAFE w/a shared lock.
+	 */
+	if (error == 0) {
+		/*hammer2_inode_lock(dip, HAMMER2_RESOLVE_SHARED);*/
+		hammer2_update_time(&mtime);
+		hammer2_inode_modify(dip);
+		dip->meta.mtime = mtime;
+		/*hammer2_inode_unlock(dip);*/
+	}
+	hammer2_inode_unlock(dip);
+
+	hammer2_trans_done(dip->pmp, HAMMER2_TRANS_SIDEQ);
+
+	vp = *ap->a_vpp;
+	if (error) {
+		if (vp)
+			vput(vp);
+	} else {
+		if (vp)
+			VOP_UNLOCK(vp);
+	}
+	return (error);
 }
 
 static int
 hammer2_rmdir(void *v)
 {
-	return (EOPNOTSUPP);
+	struct vop_rmdir_v2_args /* {
+		struct vnode *a_dvp;
+		struct vnode *a_vp;
+		struct componentname *a_cnp;
+	} */ *ap = v;
+	struct componentname *cnp = ap->a_cnp;
+	struct vnode *dvp = ap->a_dvp;
+	struct vnode *vp = ap->a_vp;
+	hammer2_inode_t *dip, *ip;
+	hammer2_xop_unlink_t *xop;
+	uint64_t mtime;
+	int error;
+
+	/* No rmdir "." please. */
+	if (dvp == vp) {
+		vrele(vp);
+		return (EINVAL);
+	}
+
+	dip = VTOI(dvp);
+	if (dip->pmp->rdonly) {
+		vrele(vp);
+		return (EROFS);
+	}
+
+	/* DragonFly has this disabled, see 568c02c60c. */
+	if (hammer2_vfs_enospace(dip, 0, cnp->cn_cred) > 1) {
+		vrele(vp);
+		return (ENOSPC);
+	}
+
+	hammer2_trans_init(dip->pmp, 0);
+
+	hammer2_inode_lock(dip, 0);
+
+	xop = hammer2_xop_alloc(dip, HAMMER2_XOP_MODIFYING);
+	hammer2_xop_setname(&xop->head, cnp->cn_nameptr, cnp->cn_namelen);
+	xop->isdir = 1;
+	xop->dopermanent = 0;
+	hammer2_xop_start(&xop->head, &hammer2_unlink_desc);
+
+	/*
+	 * Collect the real inode and adjust nlinks, destroy the real
+	 * inode if nlinks transitions to 0 and it was the real inode
+	 * (else it has already been removed).
+	 */
+	error = hammer2_xop_collect(&xop->head, 0);
+	error = hammer2_error_to_errno(error);
+	if (error == 0) {
+		ip = hammer2_inode_get(dip->pmp, &xop->head, -1, -1);
+		hammer2_xop_retire(&xop->head, HAMMER2_XOPMASK_VOP);
+		if (ip) {
+			/*
+			 * Note that ->a_vp isn't provided in DragonFly,
+			 * hence vprecycle.
+			 */
+			KKASSERT(ip->vp == vp);
+			hammer2_inode_unlink_finisher(ip, NULL);
+			hammer2_inode_depend(dip, ip); /* after modified */
+			hammer2_inode_unlock(ip);
+		}
+	} else {
+		hammer2_xop_retire(&xop->head, HAMMER2_XOPMASK_VOP);
+	}
+
+	/*
+	 * Update dip's mtime.
+	 * We can use a shared inode lock and allow the meta.mtime update
+	 * SMP race.  hammer2_inode_modify() is MPSAFE w/a shared lock.
+	 */
+	if (error == 0) {
+		/*hammer2_inode_lock(dip, HAMMER2_RESOLVE_SHARED);*/
+		hammer2_update_time(&mtime);
+		hammer2_inode_modify(dip);
+		dip->meta.mtime = mtime;
+		/*hammer2_inode_unlock(dip);*/
+	}
+	hammer2_inode_unlock(dip);
+
+	hammer2_trans_done(dip->pmp, HAMMER2_TRANS_SIDEQ);
+
+	if (error == 0) {
+		cache_purge(dvp);
+		cache_purge(vp);
+	}
+
+	vput(vp);
+	return (error);
 }
 
 static int
 hammer2_remove(void *v)
 {
-	return (EOPNOTSUPP);
+	struct vop_remove_v3_args /* {
+		struct vnode *a_dvp;
+		struct vnode *a_vp;
+		struct componentname *a_cnp;
+		nlink_t ctx_vp_new_nlink;
+	} */ *ap = v;
+	struct componentname *cnp = ap->a_cnp;
+	struct vnode *dvp = ap->a_dvp;
+	struct vnode *vp = ap->a_vp;
+	hammer2_inode_t *dip, *ip;
+	hammer2_xop_unlink_t *xop;
+	uint64_t mtime;
+	int error;
+
+	dip = VTOI(dvp);
+	if (dip->pmp->rdonly) {
+		vrele(vp);
+		return (EROFS);
+	}
+
+	/* DragonFly has this disabled, see 568c02c60c. */
+	if (hammer2_vfs_enospace(dip, 0, cnp->cn_cred) > 1) {
+		vrele(vp);
+		return (ENOSPC);
+	}
+
+	hammer2_trans_init(dip->pmp, 0);
+
+	hammer2_inode_lock(dip, 0);
+
+	xop = hammer2_xop_alloc(dip, HAMMER2_XOP_MODIFYING);
+	hammer2_xop_setname(&xop->head, cnp->cn_nameptr, cnp->cn_namelen);
+	xop->isdir = 0;
+	xop->dopermanent = 0;
+	hammer2_xop_start(&xop->head, &hammer2_unlink_desc);
+
+	/*
+	 * Collect the real inode and adjust nlinks, destroy the real
+	 * inode if nlinks transitions to 0 and it was the real inode
+	 * (else it has already been removed).
+	 */
+	error = hammer2_xop_collect(&xop->head, 0);
+	error = hammer2_error_to_errno(error);
+	if (error == 0) {
+		ip = hammer2_inode_get(dip->pmp, &xop->head, -1, -1);
+		hammer2_xop_retire(&xop->head, HAMMER2_XOPMASK_VOP);
+		if (ip) {
+			/*
+			 * Note that ->a_vp isn't provided in DragonFly,
+			 * hence vprecycle.
+			 */
+			KKASSERT(ip->vp == vp);
+			hammer2_inode_unlink_finisher(ip, NULL);
+			hammer2_inode_depend(dip, ip); /* after modified */
+			hammer2_inode_unlock(ip);
+		}
+	} else {
+		hammer2_xop_retire(&xop->head, HAMMER2_XOPMASK_VOP);
+	}
+
+	/*
+	 * Update dip's mtime.
+	 * We can use a shared inode lock and allow the meta.mtime update
+	 * SMP race.  hammer2_inode_modify() is MPSAFE w/a shared lock.
+	 */
+	if (error == 0) {
+		/*hammer2_inode_lock(dip, HAMMER2_RESOLVE_SHARED);*/
+		hammer2_update_time(&mtime);
+		hammer2_inode_modify(dip);
+		dip->meta.mtime = mtime;
+		/*hammer2_inode_unlock(dip);*/
+	}
+	hammer2_inode_unlock(dip);
+
+	hammer2_trans_done(dip->pmp, HAMMER2_TRANS_SIDEQ);
+
+	if (dvp == vp)
+		vrele(vp);
+	else
+		vput(vp);
+	return (error);
 }
 
+#if 0
 static int
 hammer2_rename(void *v)
 {
 	return (EOPNOTSUPP);
 }
+#endif
 
 static int
 hammer2_link(void *v)
 {
-	return (EOPNOTSUPP);
+	struct vop_link_v2_args /* {
+		struct vnode *a_dvp;
+		struct vnode *a_vp;
+		struct componentname *a_cnp;
+	} */ *ap = v;
+	struct componentname *cnp = ap->a_cnp;
+	struct vnode *dvp = ap->a_dvp;
+	struct vnode *vp = ap->a_vp;
+	hammer2_inode_t *tdip; /* target directory to create link in */
+	hammer2_inode_t *ip; /* inode we are hardlinking to */
+	uint64_t cmtime;
+	int error;
+
+	if (dvp->v_mount != vp->v_mount)
+		return (EXDEV);
+
+	tdip = VTOI(dvp);
+	if (tdip->pmp->rdonly || (tdip->pmp->flags & HAMMER2_PMPF_EMERG))
+		return (EROFS);
+	if (hammer2_vfs_enospace(tdip, 0, cnp->cn_cred) > 1)
+		return (ENOSPC);
+
+	/*
+	 * ip represents the file being hardlinked.  The file could be a
+	 * normal file or a hardlink target if it has already been hardlinked.
+	 * (with the new semantics, it will almost always be a hardlink
+	 * target).
+	 *
+	 * Bump nlinks and potentially also create or move the hardlink
+	 * target in the parent directory common to (ip) and (tdip).  The
+	 * consolidation code can modify ip->cluster.  The returned cluster
+	 * is locked.
+	 */
+	ip = VTOI(vp);
+	KKASSERT(ip->pmp);
+	hammer2_trans_init(ip->pmp, 0);
+
+	/*
+	 * Target should be an indexed inode or there's no way we will ever
+	 * be able to find it!
+	 */
+	KKASSERT((ip->meta.name_key & HAMMER2_DIRHASH_VISIBLE) == 0);
+
+	hammer2_inode_lock4(tdip, ip, NULL, NULL);
+	hammer2_update_time(&cmtime);
+
+	/*
+	 * Create the directory entry and bump nlinks.
+	 * Also update ip's ctime.
+	 */
+	error = hammer2_dirent_create(tdip, cnp->cn_nameptr, cnp->cn_namelen,
+	    ip->meta.inum, ip->meta.type);
+	hammer2_inode_modify(ip);
+	++ip->meta.nlinks;
+	ip->meta.ctime = cmtime;
+
+	if (error == 0) {
+		/* Update dip's [cm]time. */
+		hammer2_inode_modify(tdip);
+		tdip->meta.mtime = cmtime;
+		tdip->meta.ctime = cmtime;
+	}
+	hammer2_inode_unlock(ip);
+	hammer2_inode_unlock(tdip);
+
+	hammer2_trans_done(ip->pmp, HAMMER2_TRANS_SIDEQ);
+
+	return (error);
 }
 
 static int
 hammer2_symlink(void *v)
 {
-	return (EOPNOTSUPP);
-}
+	struct vop_symlink_v3_args /* {
+		struct vnode *a_dvp;
+		struct vnode **a_vpp;
+		struct componentname *a_cnp;
+		struct vattr *a_vap;
+		char *a_target;
+	} */ *ap = v;
+	struct componentname *cnp = ap->a_cnp;
+	struct vnode *dvp = ap->a_dvp;
+	struct vnode *vp;
+	hammer2_inode_t *dip, *nip;
+	hammer2_tid_t inum;
+	uint64_t mtime;
+	int error;
+
+	return (EOPNOTSUPP); /* XXX */
+
+	dip = VTOI(dvp);
+	if (dip->pmp->rdonly || (dip->pmp->flags & HAMMER2_PMPF_EMERG))
+		return (EROFS);
+	if (hammer2_vfs_enospace(dip, 0, cnp->cn_cred) > 1)
+		return (ENOSPC);
+
+	ap->a_vap->va_type = VLNK; /* enforce type */
+
+	hammer2_trans_init(dip->pmp, 0);
+
+	/*
+	 * Create the softlink as an inode and then create the directory entry.
+	 * dip must be locked before nip to avoid deadlock.
+	 */
+	inum = hammer2_trans_newinum(dip->pmp);
+
+	hammer2_inode_lock(dip, 0);
+	nip = hammer2_inode_create_normal(dip, ap->a_vap, cnp->cn_cred, inum,
+	    &error);
+	if (error)
+		error = hammer2_error_to_errno(error);
+	else
+		error = hammer2_dirent_create(dip, cnp->cn_nameptr,
+		    cnp->cn_namelen, nip->meta.inum, nip->meta.type);
+	if (error) {
+		if (nip) {
+			hammer2_inode_unlink_finisher(nip, NULL);
+			hammer2_inode_unlock(nip);
+			nip = NULL;
+		}
+		*ap->a_vpp = NULL;
+		hammer2_inode_unlock(dip);
+		hammer2_trans_done(dip->pmp, HAMMER2_TRANS_SIDEQ);
+		return (error);
+	} else {
+		/*
+		 * inode_depend() must occur before the igetv() because
+		 * the igetv() can temporarily release the inode lock.
+		 * NetBSD VFS wants filesystem to use vcache_new() here.
+		 */
+		hammer2_inode_depend(dip, nip); /* before igetv */
+		error = hammer2_igetv(nip, LK_EXCLUSIVE, &vp);
+		if (error == 0) {
+			*ap->a_vpp = vp;
+			cache_enter(dvp, vp, cnp->cn_nameptr, cnp->cn_namelen,
+			    cnp->cn_flags);
+			hammer2_inode_vhold(nip);
+		}
+		hammer2_inode_unlock(nip);
+	}
+
+	/* Build the softlink. */
+	if (error == 0) {
+#if 0
+		size_t bytes;
+		struct uio auio;
+		struct iovec aiov;
+
+		bytes = strlen(ap->a_target);
+		bzero(&auio, sizeof(auio));
+		bzero(&aiov, sizeof(aiov));
+		auio.uio_iov = &aiov;
+		auio.uio_segflg = UIO_SYSSPACE;
+		auio.uio_rw = UIO_WRITE;
+		auio.uio_resid = bytes;
+		auio.uio_iovcnt = 1;
+		auio.uio_td = curthread;
+		aiov.iov_base = ap->a_target;
+		aiov.iov_len = bytes;
+		error = hammer2_write_file(nip, &auio, IO_APPEND, 0);
+		/* XXX handle error */
+		error = 0;
 #endif
+	}
+
+	/*
+	 * Update dip's mtime.
+	 * We can use a shared inode lock and allow the meta.mtime update
+	 * SMP race.  hammer2_inode_modify() is MPSAFE w/a shared lock.
+	 */
+	if (error == 0) {
+		/*hammer2_inode_lock(dip, HAMMER2_RESOLVE_SHARED);*/
+		hammer2_update_time(&mtime);
+		hammer2_inode_modify(dip);
+		dip->meta.mtime = mtime;
+		/*hammer2_inode_unlock(dip);*/
+	}
+	hammer2_inode_unlock(dip);
+
+	hammer2_trans_done(dip->pmp, HAMMER2_TRANS_SIDEQ);
+
+	vp = *ap->a_vpp;
+	if (error) {
+		if (vp)
+			vput(vp);
+	} else {
+		if (vp)
+			VOP_UNLOCK(vp);
+	}
+	return (error);
+}
 
 static int
 hammer2_open(void *v)
@@ -762,6 +1513,11 @@ hammer2_open(void *v)
 	return (0);
 }
 
+static void
+hammer2_itimes_locked(struct vnode *vp)
+{
+}
+
 static int
 hammer2_close(void *v)
 {
@@ -770,9 +1526,13 @@ hammer2_close(void *v)
 		int a_fflag;
 		kauth_cred_t a_cred;
 	} */ *ap = v;
-	struct vnode *vp __diagused = ap->a_vp;
+	struct vnode *vp = ap->a_vp;
 
 	KASSERT(VOP_ISLOCKED(vp));
+
+	if (vrefcnt(vp) > 1)
+		hammer2_itimes_locked(vp);
+
 	return (0);
 }
 
@@ -786,10 +1546,24 @@ hammer2_ioctl(void *v)
 		int  a_fflag;
 		kauth_cred_t a_cred;
 	} */ *ap = v;
-	hammer2_inode_t *ip = VTOI(ap->a_vp);
+	struct vnode *vp = ap->a_vp;
+	hammer2_inode_t *ip = VTOI(vp);
+	int error;
 
-	return (hammer2_ioctl_impl(ip, ap->a_command, ap->a_data, ap->a_fflag,
-	    ap->a_cred));
+	/*
+	 * XXX2 The ioctl implementation is expected to lock vp here,
+	 * but fs sync from ioctl causes deadlock loop.
+	 */
+	error = 0; /* vn_lock(vp, LK_EXCLUSIVE); */
+	if (error == 0) {
+		error = hammer2_ioctl_impl(ip, ap->a_command, ap->a_data,
+		    ap->a_fflag, ap->a_cred);
+		/* VOP_UNLOCK(vp); */
+	} else {
+		error = EBADF;
+	}
+
+	return (error);
 }
 
 static int
@@ -903,8 +1677,8 @@ static const struct vnodeopv_entry_desc hammer2_vnodeop_entries[] = {
 	{ &vop_default_desc, vn_default_error },
 	{ &vop_parsepath_desc, genfs_parsepath },	/* parsepath */
 	{ &vop_lookup_desc, hammer2_nresolve },		/* lookup */
-	{ &vop_create_desc, genfs_eopnotsupp },		/* create */
-	{ &vop_mknod_desc, genfs_eopnotsupp },		/* mknod */
+	{ &vop_create_desc, hammer2_create },		/* create */
+	{ &vop_mknod_desc, hammer2_mknod },		/* mknod */
 	{ &vop_open_desc, hammer2_open },		/* open */
 	{ &vop_close_desc, hammer2_close },		/* close */
 	{ &vop_access_desc, hammer2_access },		/* access */
@@ -921,14 +1695,14 @@ static const struct vnodeopv_entry_desc hammer2_vnodeop_entries[] = {
 	{ &vop_kqfilter_desc, genfs_kqfilter },		/* kqfilter */
 	{ &vop_revoke_desc, genfs_revoke },		/* revoke */
 	{ &vop_mmap_desc, genfs_mmap },			/* mmap */
-	{ &vop_fsync_desc, genfs_nullop },		/* fsync */
+	{ &vop_fsync_desc, hammer2_fsync },		/* fsync */
 	{ &vop_seek_desc, genfs_seek },			/* seek */
-	{ &vop_remove_desc, genfs_eopnotsupp },		/* remove */
-	{ &vop_link_desc, genfs_erofs_link },		/* link */
+	{ &vop_remove_desc, hammer2_remove },		/* remove */
+	{ &vop_link_desc, hammer2_link },		/* link */
 	{ &vop_rename_desc, genfs_eopnotsupp },		/* rename */
-	{ &vop_mkdir_desc, genfs_eopnotsupp },		/* mkdir */
-	{ &vop_rmdir_desc, genfs_eopnotsupp },		/* rmdir */
-	{ &vop_symlink_desc, genfs_erofs_symlink },	/* symlink */
+	{ &vop_mkdir_desc, hammer2_mkdir },		/* mkdir */
+	{ &vop_rmdir_desc, hammer2_rmdir },		/* rmdir */
+	{ &vop_symlink_desc, hammer2_symlink },		/* symlink */
 	{ &vop_readdir_desc, hammer2_readdir },		/* readdir */
 	{ &vop_readlink_desc, hammer2_readlink },	/* readlink */
 	{ &vop_abortop_desc, genfs_abortop },		/* abortop */
@@ -962,7 +1736,7 @@ const struct vnodeopv_entry_desc hammer2_specop_entries[] = {
 	{ &vop_read_desc, spec_read },			/* read */
 	{ &vop_write_desc, spec_write },		/* write */
 	{ &vop_fcntl_desc, genfs_fcntl },		/* fcntl */
-	{ &vop_fsync_desc, spec_fsync },		/* fsync */
+	{ &vop_fsync_desc, hammer2_fsync },		/* fsync */
 	{ &vop_inactive_desc, hammer2_inactive },	/* inactive */
 	{ &vop_reclaim_desc, hammer2_reclaim },		/* reclaim */
 	{ &vop_lock_desc, genfs_lock },			/* lock */
@@ -987,7 +1761,7 @@ const struct vnodeopv_entry_desc hammer2_fifoop_entries[] = {
 	{ &vop_read_desc, vn_fifo_bypass },		/* read */
 	{ &vop_write_desc, vn_fifo_bypass },		/* write */
 	{ &vop_fcntl_desc, genfs_fcntl },		/* fcntl */
-	{ &vop_fsync_desc, vn_fifo_bypass },		/* fsync */
+	{ &vop_fsync_desc, hammer2_fsync },		/* fsync */
 	{ &vop_inactive_desc, hammer2_inactive },	/* inactive */
 	{ &vop_reclaim_desc, hammer2_reclaim },		/* reclaim */
 	{ &vop_lock_desc, genfs_lock },			/* lock */
