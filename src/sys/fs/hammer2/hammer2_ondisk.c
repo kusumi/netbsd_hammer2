@@ -40,6 +40,7 @@
 
 #include <sys/fcntl.h>
 #include <sys/namei.h>
+#include <sys/dkio.h>
 #include <sys/conf.h>
 
 #include <miscfs/specfs/specdev.h> /* for v_rdev */

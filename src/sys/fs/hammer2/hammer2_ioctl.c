@@ -40,6 +40,7 @@
 #include "hammer2_mount.h"
 
 #include <sys/fcntl.h>
+#include <sys/dkio.h>
 
 /*
  * Return 1 if read-only mounted otherwise 0.  DragonFly allows bwrite(9)

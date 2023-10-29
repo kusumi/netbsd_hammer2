@@ -71,6 +71,16 @@ typedef kmutex_t hammer2_lk_t;
 #define hammer2_lk_unlock(p)		mutex_exit(p)
 #define hammer2_lk_destroy(p)		mutex_destroy(p)
 
+#define hammer2_lk_assert_ex(p)		KASSERT(mutex_owned(p))
+//#define hammer2_lk_assert_unlocked(p)
+
+typedef kcondvar_t hammer2_lkc_t;
+
+#define hammer2_lkc_init(c, s)		cv_init(c, s)
+#define hammer2_lkc_destroy(c)		cv_destroy(c)
+#define hammer2_lkc_sleep(c, p, s)	cv_wait(c, p)
+#define hammer2_lkc_wakeup(c)		cv_broadcast(c)
+
 /*
  * Mutex and spinlock shims.
  * Normal synchronous non-abortable locks can be substituted for spinlocks.
@@ -78,7 +88,6 @@ typedef kmutex_t hammer2_lk_t;
  */
 typedef krwlock_t hammer2_mtx_t;
 
-/* Zero on success. */
 #define hammer2_mtx_init(p, s)		rw_init(p)
 #define hammer2_mtx_ex(p)		rw_enter(p, RW_WRITER)
 #define hammer2_mtx_ex_try(p)		(!rw_tryenter(p, RW_WRITER))
@@ -120,7 +129,6 @@ hammer2_mtx_temp_restore(hammer2_mtx_t *p, int x)
 
 typedef krwlock_t hammer2_spin_t;
 
-/* Zero on success. */
 #define hammer2_spin_init(p, s)		rw_init(p)
 #define hammer2_spin_ex(p)		rw_enter(p, RW_WRITER)
 #define hammer2_spin_sh(p)		rw_enter(p, RW_READER)

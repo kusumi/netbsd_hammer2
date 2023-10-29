@@ -312,15 +312,16 @@ hammer2_pfsalloc(hammer2_chain_t *chain, const hammer2_inode_data_t *ripdata,
 	if (pmp == NULL) {
 		pmp = malloc(sizeof(*pmp), M_HAMMER2, M_WAITOK | M_ZERO);
 		pmp->force_local = force_local;
+		hammer2_trans_manage_init(pmp);
 		hammer2_spin_init(&pmp->inum_spin, "h2pmp_inosp");
 		hammer2_spin_init(&pmp->lru_spin, "h2pmp_lrusp");
 		hammer2_spin_init(&pmp->list_spin, "h2pmp_lssp");
 		for (i = 0; i < HAMMER2_IHASH_SIZE; i++) {
-			mutex_init(&pmp->xop_lock[i], MUTEX_DEFAULT, IPL_NONE);
-			cv_init(&pmp->xop_cv[i], "h2pmp_xopcv");
+			hammer2_lk_init(&pmp->xop_lock[i], "h2pmp_xoplk");
+			hammer2_lkc_init(&pmp->xop_cv[i], "h2pmp_xoplkc");
 		}
-		mutex_init(&pmp->trans_lock, MUTEX_DEFAULT, IPL_NONE);
-		cv_init(&pmp->trans_cv, "h2pmp_trcv");
+		hammer2_lk_init(&pmp->trans_lock, "h2pmp_trlk");
+		hammer2_lkc_init(&pmp->trans_cv, "h2pmp_trlkc");
 		RB_INIT(&pmp->inum_tree);
 		TAILQ_INIT(&pmp->syncq);
 		TAILQ_INIT(&pmp->depq);
@@ -495,11 +496,11 @@ hammer2_pfsfree(hammer2_pfs_t *pmp)
 		hammer2_spin_destroy(&pmp->lru_spin);
 		hammer2_spin_destroy(&pmp->list_spin);
 		for (i = 0; i < HAMMER2_IHASH_SIZE; i++) {
-			mutex_destroy(&pmp->xop_lock[i]);
-			cv_destroy(&pmp->xop_cv[i]);
+			hammer2_lk_destroy(&pmp->xop_lock[i]);
+			hammer2_lkc_destroy(&pmp->xop_cv[i]);
 		}
-		mutex_destroy(&pmp->trans_lock);
-		cv_destroy(&pmp->trans_cv);
+		hammer2_lk_destroy(&pmp->trans_lock);
+		hammer2_lkc_destroy(&pmp->trans_cv);
 		hashdone(pmp->ipdep_lists, HASH_LIST, pmp->ipdep_mask);
 		if (pmp->fspec)
 			free(pmp->fspec, M_HAMMER2);
@@ -599,7 +600,6 @@ again:
 static int
 hammer2_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 {
-	struct lwp *l = curlwp;
 	dev_t dev;
 	struct hammer2_mount_info *args = data;
 	hammer2_dev_t *hmp = NULL, *hmp_tmp, *force_local;
@@ -988,6 +988,7 @@ next_hmp:
 		 * inode is locked -> hammer2_inode_chain() -> lock chain
 		 */
 		hammer2_update_pmps(hmp);
+		hammer2_bulkfree_init(hmp);
 	} else {
 		/* hmp->devvp_list is already constructed. */
 		hammer2_cleanup_devvp(&devvpl);
@@ -1105,7 +1106,7 @@ next_hmp:
 	snprintf(pmp->fspec, dlen, "%s@%s", devstr, label);
 
 	error = set_statvfs_info(path, UIO_USERSPACE, pmp->fspec, UIO_SYSSPACE,
-	    mp->mnt_op->vfs_name, mp, l);
+	    mp->mnt_op->vfs_name, mp, curlwp);
 	if (error) {
 		hprintf("set_statvfs_info failed %d\n", error);
 		hammer2_unmount_helper(mp, NULL, hmp);
@@ -1296,7 +1297,36 @@ again:
 		return;
 	}
 
+	hammer2_bulkfree_uninit(hmp);
 	hammer2_pfsfree_scan(hmp, 0);
+
+	/*
+	 * Flush whatever is left.  Unmounted but modified PFS's might still
+	 * have some dirty chains on them.
+	 */
+	hammer2_chain_lock(&hmp->vchain, HAMMER2_RESOLVE_ALWAYS);
+	hammer2_chain_lock(&hmp->fchain, HAMMER2_RESOLVE_ALWAYS);
+
+	if (hmp->fchain.flags & HAMMER2_CHAIN_FLUSH_MASK) {
+		hammer2_voldata_modify(hmp);
+		hammer2_flush(&hmp->fchain,
+		    HAMMER2_FLUSH_TOP | HAMMER2_FLUSH_ALL);
+	}
+	hammer2_chain_unlock(&hmp->fchain);
+
+	if (hmp->vchain.flags & HAMMER2_CHAIN_FLUSH_MASK)
+		hammer2_flush(&hmp->vchain,
+		    HAMMER2_FLUSH_TOP | HAMMER2_FLUSH_ALL);
+	hammer2_chain_unlock(&hmp->vchain);
+
+	if ((hmp->vchain.flags | hmp->fchain.flags) &
+	    HAMMER2_CHAIN_FLUSH_MASK) {
+		hprintf("chains left over after final sync "
+		    "vchain %08x fchain %08x\n",
+		    hmp->vchain.flags, hmp->fchain.flags);
+		KKASSERT(0);
+	}
+
 	hammer2_pfsfree_scan(hmp, 1);
 	KKASSERT(hmp->spmp == NULL);
 
@@ -1306,6 +1336,25 @@ again:
 		hammer2_cleanup_devvp(&hmp->devvp_list);
 	}
 	KKASSERT(TAILQ_EMPTY(&hmp->devvp_list));
+
+	/*
+	 * Clear vchain/fchain flags that might prevent final cleanup
+	 * of these chains.
+	 */
+	if (hmp->vchain.flags & HAMMER2_CHAIN_MODIFIED) {
+		atomic_add_long(&hammer2_count_modified_chains, -1);
+		atomic_clear_int(&hmp->vchain.flags, HAMMER2_CHAIN_MODIFIED);
+	}
+	if (hmp->vchain.flags & HAMMER2_CHAIN_UPDATE)
+		atomic_clear_int(&hmp->vchain.flags, HAMMER2_CHAIN_UPDATE);
+
+	if (hmp->fchain.flags & HAMMER2_CHAIN_MODIFIED) {
+		atomic_add_long(&hammer2_count_modified_chains, -1);
+		atomic_clear_int(&hmp->fchain.flags, HAMMER2_CHAIN_MODIFIED);
+	}
+	if (hmp->fchain.flags & HAMMER2_CHAIN_UPDATE)
+		atomic_clear_int(&hmp->fchain.flags, HAMMER2_CHAIN_UPDATE);
+
 #ifdef INVARIANTS
 	hammer2_dump_chain(&hmp->vchain, 0, 0, -1, 'v');
 	hammer2_dump_chain(&hmp->fchain, 0, 0, -1, 'f');
@@ -1320,8 +1369,10 @@ again:
 
 	hammer2_mtx_ex(&hmp->iotree_lock);
 	hammer2_io_cleanup(hmp, &hmp->iotree);
-	if (hmp->iofree_count)
-		debug_hprintf("%d I/O's left hanging\n", hmp->iofree_count);
+	if (hmp->iofree_count) {
+		hprintf("%d I/O's left hanging\n", hmp->iofree_count);
+		//KKASSERT(0); /* XXX2 enable this */
+	}
 	hammer2_mtx_unlock(&hmp->iotree_lock);
 
 	TAILQ_REMOVE(&hammer2_mntlist, hmp, mntentry);
