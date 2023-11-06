@@ -45,6 +45,8 @@
 #include <miscfs/genfs/genfs_node.h>
 #include <miscfs/specfs/specdev.h> /* for v_rdev */
 
+#include <uvm/uvm_extern.h>
+
 MODULE(MODULE_CLASS_VFS, hammer2, NULL);
 
 /* sys/sys/vnode.h */
@@ -177,7 +179,7 @@ SYSCTL_SETUP(hammer2_sysctl_create, "hammer2 sysctl")
 
 	return;
 fail:
-	printf("sysctl_createv failed with error %d\n", error);
+	hprintf("sysctl_createv failed with error %d\n", error);
 }
 
 static int
@@ -627,6 +629,13 @@ hammer2_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		return (EINVAL);
 	}
 
+	/* HMNT2_LOCAL is not allowed, it's already broken in DragonFly. */
+	if (args->hflags & HMNT2_LOCAL) {
+		hprintf("HMNT2_LOCAL is not allowed\n");
+		return (EINVAL);
+	}
+	KKASSERT((args->hflags & HMNT2_LOCAL) == 0);
+
 	if (mp->mnt_flag & MNT_GETARGS) {
 		pmp = MPTOPMP(mp);
 		hmp = pmp->pfs_hmps[0];
@@ -661,9 +670,6 @@ hammer2_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		return (error);
 	}
 	debug_hprintf("devstr \"%s\" mntpt \"%s\"\n", devstr, "<userspace>");
-
-	/* HMNT2_LOCAL is not allowed, it's already broken in DragonFly. */
-	KKASSERT((args->hflags & HMNT2_LOCAL) == 0);
 
 	/*
 	 * Extract device and label, automatically mount @DATA if no label

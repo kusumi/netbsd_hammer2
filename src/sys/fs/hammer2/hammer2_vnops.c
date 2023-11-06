@@ -47,7 +47,10 @@
 #include <miscfs/specfs/specdev.h>
 #include <miscfs/fifofs/fifo.h>
 
+#include <uvm/uvm_extern.h>
+
 static void hammer2_truncate_file(hammer2_inode_t *, hammer2_key_t);
+static void hammer2_extend_file(hammer2_inode_t *, hammer2_key_t);
 
 static int
 hammer2_inactive(void *v)
@@ -437,12 +440,7 @@ hammer2_setattr(void *v)
 				hammer2_truncate_file(ip, vap->va_size);
 				hammer2_mtx_unlock(&ip->truncate_lock);
 			} else {
-#if 0
 				hammer2_extend_file(ip, vap->va_size);
-#else
-				error = EOPNOTSUPP;
-				goto done;
-#endif
 			}
 			hammer2_inode_modify(ip);
 			ip->meta.mtime = ctime;
@@ -833,20 +831,121 @@ hammer2_write(void *v)
 static void
 hammer2_truncate_file(hammer2_inode_t *ip, hammer2_key_t nsize)
 {
-	hammer2_key_t lbase;
-	int nblksize;
+	hammer2_mtx_assert_locked(&ip->lock);
 
 	hammer2_mtx_unlock(&ip->lock);
-	if (ip->vp) {
-		nblksize = hammer2_calc_logical(ip, nsize, &lbase, NULL);
-		vtruncbuf(ip->vp, howmany(nsize, nblksize), 0, 0);
-	}
+	if (ip->vp)
+		vtruncbuf(ip->vp, howmany(nsize, hammer2_get_logical()), 0, 0);
 	hammer2_mtx_ex(&ip->lock);
 	KKASSERT((ip->flags & HAMMER2_INODE_RESIZED) == 0);
 	ip->osize = ip->meta.size;
 	ip->meta.size = nsize;
 	atomic_set_int(&ip->flags, HAMMER2_INODE_RESIZED);
 	hammer2_inode_modify(ip);
+}
+
+/*
+ * Extend the size of a file.  The inode must be locked.
+ *
+ * Even though the file size is changing, we do not have to set the
+ * INODE_RESIZED bit unless the file size crosses the EMBEDDED_BYTES
+ * boundary.  When this occurs a hammer2_inode_chain_sync() is required
+ * to prepare the inode cluster's indirect block table, otherwise
+ * async execution of the strategy code will implode on us.
+ *
+ * WARNING! Assumes that the kernel interlocks size changes at the
+ *	    vnode level.
+ *
+ * WARNING! Caller assumes responsibility for transitioning out
+ *	    of the inode DIRECTDATA mode if INODE_RESIZED is set.
+ */
+static void
+hammer2_extend_file(hammer2_inode_t *ip, hammer2_key_t nsize)
+{
+	hammer2_key_t osize;
+
+	hammer2_mtx_assert_locked(&ip->lock);
+
+	KKASSERT((ip->flags & HAMMER2_INODE_RESIZED) == 0);
+	osize = ip->meta.size;
+	/* XXX */
+	if (osize <= HAMMER2_EMBEDDED_BYTES && nsize > HAMMER2_EMBEDDED_BYTES) {
+		hprintf("%jd -> %jd not supported yet\n",
+		    (intmax_t)osize, (intmax_t)nsize);
+		return;
+	}
+
+	hammer2_inode_modify(ip);
+	ip->osize = osize;
+	ip->meta.size = nsize;
+
+	/*
+	 * We must issue a chain_sync() when the DIRECTDATA state changes
+	 * to prevent confusion between the flush code and the in-memory
+	 * state.  This is not perfect because we are doing it outside of
+	 * a sync/fsync operation, so it might not be fully synchronized
+	 * with the meta-data topology flush.
+	 *
+	 * We must retain and re-dirty the buffer cache buffer containing
+	 * the direct data so it can be written to a real block.  It should
+	 * not be possible for a bread error to occur since the original data
+	 * is extracted from the inode structure directly.
+	 */
+	if (osize <= HAMMER2_EMBEDDED_BYTES && nsize > HAMMER2_EMBEDDED_BYTES) {
+#if 0
+		if (osize) {
+			struct buf *bp;
+
+			oblksize = hammer2_get_logical();
+			error = bread_kvabio(ip->vp, 0, oblksize, &bp);
+			atomic_set_int(&ip->flags, HAMMER2_INODE_RESIZED);
+			hammer2_inode_chain_sync(ip);
+			if (error == 0) {
+				bheavy(bp);
+				bdwrite(bp);
+			} else {
+				brelse(bp);
+			}
+		} else {
+			atomic_set_int(&ip->flags, HAMMER2_INODE_RESIZED);
+			hammer2_inode_chain_sync(ip);
+		}
+#endif
+	}
+	hammer2_mtx_unlock(&ip->lock);
+	if (ip->vp) {
+		uvm_vnp_setwritesize(ip->vp, nsize);
+		uvm_vnp_setsize(ip->vp, nsize);
+	}
+	hammer2_mtx_ex(&ip->lock);
+}
+
+/*
+ * While bmap implementation itself works, HAMMER2 needs to force VFS to invoke
+ * logical vnode strategy (rather than device vnode strategy) unless compression
+ * type is set to none.
+ */
+static int use_nop_bmap = 1;
+
+static __inline int
+hammer2_nop_bmap(void *v)
+{
+	struct vop_bmap_args /* {
+		struct vnode *a_vp;
+		daddr_t a_bn;
+		struct vnode **a_vpp;
+		daddr_t *a_bnp;
+		int *a_runp;
+	} */ *ap = v;
+
+	if (ap->a_vpp != NULL)
+		*ap->a_vpp = ap->a_vp;
+	if (ap->a_bnp != NULL)
+		*ap->a_bnp = ap->a_bn;
+	if (ap->a_runp != NULL)
+		*ap->a_runp = 0;
+
+	return (0);
 }
 
 static int
@@ -864,6 +963,9 @@ hammer2_bmap(void *v)
 	hammer2_inode_t *ip = VTOI(ap->a_vp);
 	hammer2_volume_t *vol;
 	int error;
+
+	if (use_nop_bmap)
+		return (hammer2_nop_bmap(v));
 
 	hmp = ip->pmp->pfs_hmps[0];
 	if (ap->a_bnp == NULL)

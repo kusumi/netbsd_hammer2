@@ -43,7 +43,6 @@
 #include <sys/proc.h>
 #include <sys/rwlock.h>
 
-/* printf(9) variants for HAMMER2 */
 #ifdef INVARIANTS
 #define HFMT	"%s(%s|%d): "
 #define HARGS	__func__, \
@@ -102,10 +101,10 @@ typedef krwlock_t hammer2_mtx_t;
 /* Non-zero if exclusively locked by the calling thread. */
 #define hammer2_mtx_owned(p)		rw_write_held(p)
 
-#define hammer2_mtx_assert_locked(p)	KASSERT(rw_lock_held(p))
-#define hammer2_mtx_assert_unlocked(p)	KASSERT(!rw_lock_held(p))
 #define hammer2_mtx_assert_ex(p)	KASSERT(rw_write_held(p))
 #define hammer2_mtx_assert_sh(p)	KASSERT(rw_read_held(p))
+#define hammer2_mtx_assert_locked(p)	KASSERT(rw_lock_held(p))
+#define hammer2_mtx_assert_unlocked(p)	KASSERT(!rw_lock_held(p))
 
 static __inline int
 hammer2_mtx_temp_release(hammer2_mtx_t *p)
@@ -136,9 +135,9 @@ typedef krwlock_t hammer2_spin_t;
 #define hammer2_spin_unsh(p)		rw_exit(p)
 #define hammer2_spin_destroy(p)		rw_destroy(p)
 
-#define hammer2_spin_assert_locked(p)	KASSERT(rw_lock_held(p))
-#define hammer2_spin_assert_unlocked(p)	KASSERT(!rw_lock_held(p))
 #define hammer2_spin_assert_ex(p)	KASSERT(rw_write_held(p))
 #define hammer2_spin_assert_sh(p)	KASSERT(rw_read_held(p))
+#define hammer2_spin_assert_locked(p)	KASSERT(rw_lock_held(p))
+#define hammer2_spin_assert_unlocked(p)	KASSERT(!rw_lock_held(p))
 
 #endif /* !_FS_HAMMER2_OS_H_ */
