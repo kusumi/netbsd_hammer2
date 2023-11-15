@@ -222,7 +222,7 @@ hammer2_inode_lock(hammer2_inode_t *ip, int how)
 	 * across the tsleep() to avoid a deadlock.
 	 */
 	hammer2_mtx_ex(&ip->lock);
-	/* XXX ip->lock isn't recursive to begin with.
+	/* XXX iplock: not recursive to begin with.
 	if (hammer2_mtx_refs(&ip->lock) > 1)
 		return;
 	*/
@@ -261,10 +261,10 @@ void
 hammer2_inode_lock4(hammer2_inode_t *ip1, hammer2_inode_t *ip2,
     hammer2_inode_t *ip3, hammer2_inode_t *ip4)
 {
-	hammer2_inode_t *ips[4], *iptmp, *ipslp;
+	hammer2_inode_t *ips[4], *iptmp, *ipslp, *iplk[4];
 	hammer2_depend_t *depend;
 	hammer2_pfs_t *pmp;
-	size_t count, i;
+	size_t count, i, j, iplkd;
 
 	pmp = ip1->pmp; /* may be NULL */
 	KKASSERT(pmp == ip2->pmp);
@@ -289,8 +289,18 @@ hammer2_inode_lock4(hammer2_inode_t *ip1, hammer2_inode_t *ip2,
 		hammer2_inode_ref(ips[i]);
 restart:
 	/* Lock the inodes in order. */
-	for (i = 0; i < count; ++i)
-		hammer2_mtx_ex(&ips[i]->lock);
+	/* XXX iplock: NetBSD HAMMER2 inode lock can't recurse. */
+	iplk[0] = iplk[1] = iplk[2] = iplk[3] = NULL;
+	for (i = 0; i < count; ++i) {
+		iplkd = 0;
+		for (j = 0; j < i; j++)
+			if (iplk[j] == ips[i])
+				iplkd = 1;
+		if (!iplkd) {
+			hammer2_mtx_ex(&ips[i]->lock);
+			iplk[i] = ips[i];
+		}
+	}
 
 	/*
 	 * Associate dependencies, record the first inode found on SYNCQ
@@ -323,7 +333,8 @@ restart:
 	 */
 	if (ipslp) {
 		for (i = 0; i < count; ++i)
-			hammer2_mtx_unlock(&ips[i]->lock);
+			if (iplk[i])
+				hammer2_mtx_unlock(&iplk[i]->lock);
 		tsleep(&ipslp->flags, 0, "h2sync", 2);
 		goto restart;
 	}
@@ -711,7 +722,7 @@ again:
 	 * this gets unlocked once and relocked.
 	 */
 	nip->refs = 1;
-	hammer2_mtx_init(&nip->lock, "h2ip_lk");
+	hammer2_mtx_init(&nip->lock, "h2ip_lk"); /* XXX iplock */
 	hammer2_mtx_init(&nip->truncate_lock, "h2ip_trlk");
 	hammer2_mtx_ex(&nip->lock);
 	TAILQ_INIT(&nip->depend_static.sideq);
@@ -787,7 +798,6 @@ hammer2_inode_create_pfs(hammer2_pfs_t *spmp, const char *name, size_t name_len,
 		++lhc;
 	}
 	hammer2_xop_retire(&sxop->head, HAMMER2_XOPMASK_VOP);
-
 	if (error) {
 		if (error != HAMMER2_ERROR_ENOENT)
 			goto done2;
@@ -804,11 +814,9 @@ hammer2_inode_create_pfs(hammer2_pfs_t *spmp, const char *name, size_t name_len,
 	xop->lhc = lhc;
 	xop->flags = HAMMER2_INSERT_PFSROOT;
 	bzero(&xop->meta, sizeof(xop->meta));
-
 	xop->meta.type = HAMMER2_OBJTYPE_DIRECTORY;
 	xop->meta.inum = 1;
 	xop->meta.iparent = pip_inum;
-
 	/* Inherit parent's inode compression mode. */
 	xop->meta.comp_algo = pip_comp_algo;
 	xop->meta.check_algo = pip_check_algo;
@@ -817,7 +825,6 @@ hammer2_inode_create_pfs(hammer2_pfs_t *spmp, const char *name, size_t name_len,
 	xop->meta.mtime = xop->meta.ctime;
 	xop->meta.mode = 0755;
 	xop->meta.nlinks = 1;
-
 	/*
 	 * Regular files and softlinks allow a small amount of data to be
 	 * directly embedded in the inode.  This flag will be cleared if
@@ -830,9 +837,7 @@ hammer2_inode_create_pfs(hammer2_pfs_t *spmp, const char *name, size_t name_len,
 	xop->meta.name_len = name_len;
 	xop->meta.name_key = lhc;
 	KKASSERT(name_len < HAMMER2_INODE_MAXNAME);
-
 	hammer2_xop_start(&xop->head, &hammer2_inode_create_desc);
-
 	error = hammer2_xop_collect(&xop->head, 0);
 	if (error) {
 		*errorp = error;
@@ -953,14 +958,11 @@ hammer2_inode_create_normal(hammer2_inode_t *pip, struct vattr *vap,
 	xop->lhc = inum;
 	xop->flags = 0;
 	xop->meta = nip->meta;
-	KKASSERT(vap);
-
 	xop->meta.name_len = hammer2_xop_setname_inum(&xop->head, inum);
 	xop->meta.name_key = inum;
 	nip->meta.name_len = xop->meta.name_len;
 	nip->meta.name_key = xop->meta.name_key;
 	hammer2_inode_modify(nip);
-
 	/*
 	 * Create the inode media chains but leave them detached.  We are
 	 * not in a flush transaction so we can't mess with media topology
@@ -1052,13 +1054,10 @@ hammer2_dirent_create(hammer2_inode_t *dip, const char *name, size_t name_len,
 	xop->dirent.inum = inum;
 	xop->dirent.type = type;
 	xop->dirent.namlen = name_len;
-
 	KKASSERT(name_len < HAMMER2_INODE_MAXNAME);
 	hammer2_xop_setname(&xop->head, name, name_len);
-
 	hammer2_xop_start(&xop->head, &hammer2_inode_mkdirent_desc);
 	error = hammer2_xop_collect(&xop->head, 0);
-
 	hammer2_xop_retire(&xop->head, HAMMER2_XOPMASK_VOP);
 done2:
 	return (hammer2_error_to_errno(error));
@@ -1339,7 +1338,7 @@ hammer2_inode_vdrop_all(hammer2_inode_t *ip)
 	struct vnode *vp;
 	int i, n;
 
-	//hammer2_mtx_assert_ex(&ip->lock); /* XXX2 unlocked in NetBSD */
+	//hammer2_mtx_assert_ex(&ip->lock); /* XXX iplock */
 	/* race window here */
 	KKASSERT(ip->refs > 0);
 
@@ -1386,7 +1385,6 @@ hammer2_inode_chain_sync(hammer2_inode_t *ip)
 		}
 		xop->ipflags = ip->flags;
 		xop->meta = ip->meta;
-
 		atomic_clear_int(&ip->flags,
 		    HAMMER2_INODE_RESIZED | HAMMER2_INODE_MODIFIED);
 		hammer2_xop_start(&xop->head, &hammer2_inode_chain_sync_desc);
@@ -1422,7 +1420,6 @@ hammer2_inode_chain_ins(hammer2_inode_t *ip)
 		hammer2_xop_start(&xop->head, &hammer2_inode_create_ins_desc);
 		error = hammer2_xop_collect(&xop->head, 0);
 		hammer2_xop_retire(&xop->head, HAMMER2_XOPMASK_VOP);
-
 		if (error == HAMMER2_ERROR_ENOENT)
 			error = 0;
 		if (error) {
@@ -1459,7 +1456,6 @@ hammer2_inode_chain_des(hammer2_inode_t *ip)
 		hammer2_xop_start(&xop->head, &hammer2_inode_destroy_desc);
 		error = hammer2_xop_collect(&xop->head, 0);
 		hammer2_xop_retire(&xop->head, HAMMER2_XOPMASK_VOP);
-
 		if (error == HAMMER2_ERROR_ENOENT)
 			error = 0;
 		if (error) {

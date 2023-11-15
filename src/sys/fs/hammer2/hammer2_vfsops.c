@@ -1941,7 +1941,7 @@ restart:
 				hammer2_inode_delayed_sideq(ip);
 			}
 			vput(vp);
-			hammer2_mtx_unlock(&ip->lock);
+			hammer2_mtx_unlock(&ip->lock); /* XXX iplock */
 			hammer2_inode_vdrop_all(ip);
 			hammer2_mtx_ex(&ip->lock);
 			vp = NULL; /* safety */

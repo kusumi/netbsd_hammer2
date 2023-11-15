@@ -494,7 +494,8 @@ hammer2_read_volume_header(struct vnode *devvp, const char *path,
 	 */
 	for (i = 0; i < HAMMER2_NUM_VOLHDRS; ++i) {
 		/* Ignore if blkoff is beyond media size. */
-		error = VOP_IOCTL(devvp, DIOCGMEDIASIZE, &mediasize, FREAD, FSCRED);
+		error = VOP_IOCTL(devvp, DIOCGMEDIASIZE, &mediasize, FREAD,
+		    FSCRED);
 		if (error) {
 			hprintf("%s #%d: failed to get media size\n", path, i);
 			continue;

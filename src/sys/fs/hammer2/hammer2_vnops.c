@@ -363,7 +363,6 @@ hammer2_setattr(void *v)
 		return (EINVAL);
 
 	hammer2_trans_init(ip->pmp, 0);
-
 	hammer2_inode_lock(ip, 0);
 
 	mode = ip->meta.mode;
@@ -510,7 +509,6 @@ done:
 		hammer2_inode_chain_sync(ip);
 
 	hammer2_inode_unlock(ip);
-
 	hammer2_trans_done(ip->pmp, HAMMER2_TRANS_SIDEQ);
 
 	return (error);
@@ -549,7 +547,6 @@ hammer2_readdir(void *v)
 	} */ *ap = v;
 	struct vnode *vp = ap->a_vp;
 	struct uio *uio = ap->a_uio;
-
 	hammer2_xop_readdir_t *xop;
 	hammer2_inode_t *ip = VTOI(vp);
 	const hammer2_inode_data_t *ripdata;
@@ -982,7 +979,6 @@ hammer2_bmap(void *v)
 	xop = hammer2_xop_alloc(ip, 0);
 	xop->lbn = ap->a_bn; /* logical block number */
 	hammer2_xop_start(&xop->head, &hammer2_bmap_desc);
-
 	error = hammer2_xop_collect(&xop->head, 0);
 	error = hammer2_error_to_errno(error);
 	if (error) {
@@ -1021,8 +1017,8 @@ hammer2_nresolve(void *v)
 		struct vnode **a_vpp;
 		struct componentname *a_cnp;
 	} */ *ap = v;
-	struct vnode *vp, *dvp = ap->a_dvp;
 	struct componentname *cnp = ap->a_cnp;
+	struct vnode *vp, *dvp = ap->a_dvp;
 	kauth_cred_t cred = cnp->cn_cred;
 	hammer2_xop_nresolve_t *xop;
 	hammer2_inode_t *ip, *dip = VTOI(dvp);
@@ -1085,12 +1081,10 @@ hammer2_nresolve(void *v)
 		return (0);
 	}
 
+	hammer2_inode_lock(dip, HAMMER2_RESOLVE_SHARED);
 	xop = hammer2_xop_alloc(dip, 0);
 	hammer2_xop_setname(&xop->head, cnp->cn_nameptr, cnp->cn_namelen);
-
-	hammer2_inode_lock(dip, HAMMER2_RESOLVE_SHARED);
 	hammer2_xop_start(&xop->head, &hammer2_nresolve_desc);
-
 	error = hammer2_xop_collect(&xop->head, 0);
 	error = hammer2_error_to_errno(error);
 	if (error)
@@ -1169,12 +1163,11 @@ hammer2_mknod(void *v)
 	if (hammer2_vfs_enospace(dip, 0, cnp->cn_cred) > 1)
 		return (ENOSPC);
 
-	hammer2_trans_init(dip->pmp, 0);
-
 	/*
 	 * Create the device inode and then create the directory entry.
 	 * dip must be locked before nip to avoid deadlock.
 	 */
+	hammer2_trans_init(dip->pmp, 0);
 	inum = hammer2_trans_newinum(dip->pmp);
 
 	hammer2_inode_lock(dip, 0);
@@ -1222,7 +1215,6 @@ hammer2_mknod(void *v)
 		/*hammer2_inode_unlock(dip);*/
 	}
 	hammer2_inode_unlock(dip);
-
 	hammer2_trans_done(dip->pmp, HAMMER2_TRANS_SIDEQ);
 
 	vp = *ap->a_vpp;
@@ -1258,12 +1250,11 @@ hammer2_mkdir(void *v)
 	if (hammer2_vfs_enospace(dip, 0, cnp->cn_cred) > 1)
 		return (ENOSPC);
 
-	hammer2_trans_init(dip->pmp, 0);
-
 	/*
 	 * Create the directory inode and then create the directory entry.
 	 * dip must be locked before nip to avoid deadlock.
 	 */
+	hammer2_trans_init(dip->pmp, 0);
 	inum = hammer2_trans_newinum(dip->pmp);
 
 	hammer2_inode_lock(dip, 0);
@@ -1311,7 +1302,6 @@ hammer2_mkdir(void *v)
 		/*hammer2_inode_unlock(dip);*/
 	}
 	hammer2_inode_unlock(dip);
-
 	hammer2_trans_done(dip->pmp, HAMMER2_TRANS_SIDEQ);
 
 	vp = *ap->a_vpp;
@@ -1347,12 +1337,11 @@ hammer2_create(void *v)
 	if (hammer2_vfs_enospace(dip, 0, cnp->cn_cred) > 1)
 		return (ENOSPC);
 
-	hammer2_trans_init(dip->pmp, 0);
-
 	/*
 	 * Create the regular file inode and then create the directory entry.
 	 * dip must be locked before nip to avoid deadlock.
 	 */
+	hammer2_trans_init(dip->pmp, 0);
 	inum = hammer2_trans_newinum(dip->pmp);
 
 	hammer2_inode_lock(dip, 0);
@@ -1400,7 +1389,6 @@ hammer2_create(void *v)
 		/*hammer2_inode_unlock(dip);*/
 	}
 	hammer2_inode_unlock(dip);
-
 	hammer2_trans_done(dip->pmp, HAMMER2_TRANS_SIDEQ);
 
 	vp = *ap->a_vpp;
@@ -1448,7 +1436,6 @@ hammer2_rmdir(void *v)
 	}
 
 	hammer2_trans_init(dip->pmp, 0);
-
 	hammer2_inode_lock(dip, 0);
 
 	xop = hammer2_xop_alloc(dip, HAMMER2_XOP_MODIFYING);
@@ -1456,7 +1443,6 @@ hammer2_rmdir(void *v)
 	xop->isdir = 1;
 	xop->dopermanent = 0;
 	hammer2_xop_start(&xop->head, &hammer2_unlink_desc);
-
 	/*
 	 * Collect the real inode and adjust nlinks, destroy the real
 	 * inode if nlinks transitions to 0 and it was the real inode
@@ -1494,7 +1480,6 @@ hammer2_rmdir(void *v)
 		/*hammer2_inode_unlock(dip);*/
 	}
 	hammer2_inode_unlock(dip);
-
 	hammer2_trans_done(dip->pmp, HAMMER2_TRANS_SIDEQ);
 
 	if (error == 0) {
@@ -1535,7 +1520,6 @@ hammer2_remove(void *v)
 	}
 
 	hammer2_trans_init(dip->pmp, 0);
-
 	hammer2_inode_lock(dip, 0);
 
 	xop = hammer2_xop_alloc(dip, HAMMER2_XOP_MODIFYING);
@@ -1543,7 +1527,6 @@ hammer2_remove(void *v)
 	xop->isdir = 0;
 	xop->dopermanent = 0;
 	hammer2_xop_start(&xop->head, &hammer2_unlink_desc);
-
 	/*
 	 * Collect the real inode and adjust nlinks, destroy the real
 	 * inode if nlinks transitions to 0 and it was the real inode
@@ -1581,7 +1564,6 @@ hammer2_remove(void *v)
 		/*hammer2_inode_unlock(dip);*/
 	}
 	hammer2_inode_unlock(dip);
-
 	hammer2_trans_done(dip->pmp, HAMMER2_TRANS_SIDEQ);
 
 	if (dvp == vp)
@@ -1591,13 +1573,246 @@ hammer2_remove(void *v)
 	return (error);
 }
 
-#if 0
 static int
 hammer2_rename(void *v)
 {
-	return (EOPNOTSUPP);
+	struct vop_rename_args /* {
+		struct vnode *a_fdvp;
+		struct vnode *a_fvp;
+		struct componentname *a_fcnp;
+		struct vnode *a_tdvp;
+		struct vnode *a_tvp;
+		struct componentname *a_tcnp;
+	} */ *ap = v;
+	struct componentname *fcnp = ap->a_fcnp;
+	struct componentname *tcnp = ap->a_tcnp;
+	struct vnode *fdvp = ap->a_fdvp;
+	struct vnode *fvp = ap->a_fvp;
+	struct vnode *tdvp = ap->a_tdvp;
+	struct vnode *tvp = ap->a_tvp;
+	hammer2_inode_t *fdip = VTOI(fdvp); /* source directory */
+	hammer2_inode_t *fip = VTOI(fvp); /* file being renamed */
+	hammer2_inode_t *tdip = VTOI(tdvp); /* target directory */
+	hammer2_inode_t *tip; /* replaced target during rename or NULL */
+	hammer2_inode_t *ip1, *ip2, *ip3, *ip4;
+	hammer2_xop_scanlhc_t *sxop;
+	hammer2_xop_nrename_t *xop4;
+	hammer2_key_t tlhc, lhcbase;
+	uint64_t mtime;
+	int error, update_fdip = 0, update_tdip = 0;
+
+	KKASSERT(fdvp != fvp);
+	KKASSERT(tdvp != tvp); /* if not how ? */
+
+	KKASSERT(fdvp == tdvp || VOP_ISLOCKED(fdvp) == 0);
+	KKASSERT(VOP_ISLOCKED(fvp) == 0);
+	KKASSERT(VOP_ISLOCKED(tdvp) == LK_EXCLUSIVE);
+	KKASSERT(tvp == NULL || VOP_ISLOCKED(tvp) == LK_EXCLUSIVE);
+
+	/* Check for cross-device rename. */
+	if (fdvp->v_mount != fvp->v_mount || fvp->v_mount != tdvp->v_mount ||
+	    tdvp->v_mount != fdvp->v_mount ||
+	    (tvp && (fvp->v_mount != tvp->v_mount))) {
+		error = EXDEV;
+		goto abortit;
+	}
+	/* If source and dest are the same, do nothing. */
+	if (tvp == fvp) {
+		error = 0;
+		goto abortit;
+	}
+
+	if (fdip->pmp->rdonly || (fdip->pmp->flags & HAMMER2_PMPF_EMERG)) {
+		error = EROFS;
+		goto abortit;
+	}
+	if (hammer2_vfs_enospace(fdip, 0, fcnp->cn_cred) > 1) {
+		error = ENOSPC;
+		goto abortit;
+	}
+
+	error = vn_lock(fvp, LK_EXCLUSIVE);
+	if (error != 0)
+		goto abortit;
+	if (fdvp != tdvp) {
+		error = vn_lock(fdvp, LK_EXCLUSIVE);
+		if (error != 0) {
+			VOP_UNLOCK(fvp);
+			goto abortit;
+		}
+	}
+
+	hammer2_trans_init(tdip->pmp, 0);
+	hammer2_inode_ref(fip); /* extra ref */
+
+	/*
+	 * Lookup the target name to determine if a directory entry
+	 * is being overwritten.  We only hold related inode locks
+	 * temporarily, the operating system is expected to protect
+	 * against rename races.
+	 */
+	tip = tvp ? VTOI(tvp) : NULL;
+	if (tip)
+		hammer2_inode_ref(tip); /* extra ref */
+
+	/*
+	 * For now try to avoid deadlocks with a simple pointer address
+	 * test.  (tip) can be NULL.
+	 */
+	ip1 = fdip;
+	ip2 = tdip;
+	ip3 = fip;
+	ip4 = tip; /* may be NULL */
+
+	if (fdip > tdip) {
+		ip1 = tdip;
+		ip2 = fdip;
+	}
+	if (tip && fip > tip) {
+		ip3 = tip;
+		ip4 = fip;
+	}
+	hammer2_inode_lock4(ip1, ip2, ip3, ip4);
+
+	/*
+	 * Resolve the collision space for (tdip, tname, tname_len).
+	 *
+	 * tdip must be held exclusively locked to prevent races since
+	 * multiple filenames can end up in the same collision space.
+	 */
+	tlhc = hammer2_dirhash(tcnp->cn_nameptr, tcnp->cn_namelen);
+	lhcbase = tlhc;
+	sxop = hammer2_xop_alloc(tdip, HAMMER2_XOP_MODIFYING);
+	sxop->lhc = tlhc;
+	hammer2_xop_start(&sxop->head, &hammer2_scanlhc_desc);
+	while ((error = hammer2_xop_collect(&sxop->head, 0)) == 0) {
+		if (tlhc != sxop->head.cluster.focus->bref.key)
+			break;
+		++tlhc;
+	}
+	error = hammer2_error_to_errno(error);
+	hammer2_xop_retire(&sxop->head, HAMMER2_XOPMASK_VOP);
+	if (error) {
+		if (error != ENOENT)
+			goto done2;
+		++tlhc;
+		error = 0;
+	}
+	if ((lhcbase ^ tlhc) & ~HAMMER2_DIRHASH_LOMASK) {
+		error = ENOSPC;
+		goto done2;
+	}
+
+	/*
+	 * Ready to go, issue the rename to the backend.  Note that meta-data
+	 * updates to the related inodes occur separately from the rename
+	 * operation.  ip1|2|3|4 are fdip, fip, tdip, tip in this order.
+	 *
+	 * NOTE: While it is not necessary to update ip->meta.name*, doing
+	 *	 so aids catastrophic recovery and debugging.
+	 */
+	if (error == 0) {
+		xop4 = hammer2_xop_alloc(fdip, HAMMER2_XOP_MODIFYING);
+		xop4->lhc = tlhc;
+		xop4->ip_key = fip->meta.name_key;
+		hammer2_xop_setip2(&xop4->head, fip);
+		hammer2_xop_setip3(&xop4->head, tdip);
+		if (tip && tip->meta.type == HAMMER2_OBJTYPE_DIRECTORY)
+		    hammer2_xop_setip4(&xop4->head, tip);
+		hammer2_xop_setname(&xop4->head, fcnp->cn_nameptr,
+		    fcnp->cn_namelen);
+		hammer2_xop_setname2(&xop4->head, tcnp->cn_nameptr,
+		    tcnp->cn_namelen);
+		hammer2_xop_start(&xop4->head, &hammer2_nrename_desc);
+		error = hammer2_xop_collect(&xop4->head, 0);
+		error = hammer2_error_to_errno(error);
+		hammer2_xop_retire(&xop4->head, HAMMER2_XOPMASK_VOP);
+		if (error == ENOENT)
+			error = 0;
+		/*
+		 * Update inode meta-data.
+		 *
+		 * WARNING!  The in-memory inode (ip) structure does not
+		 *	     maintain a copy of the inode's filename buffer.
+		 */
+		if (error == 0 &&
+		    (fip->meta.name_key & HAMMER2_DIRHASH_VISIBLE)) {
+			hammer2_inode_modify(fip);
+			fip->meta.name_len = tcnp->cn_namelen;
+			fip->meta.name_key = tlhc;
+		}
+		if (error == 0) {
+			hammer2_inode_modify(fip);
+			fip->meta.iparent = tdip->meta.inum;
+		}
+		update_fdip = 1;
+		update_tdip = 1;
+	}
+done2:
+	/*
+	 * If no error, the backend has replaced the target directory entry.
+	 * We must adjust nlinks on the original replace target if it exists.
+	 * DragonFly HAMMER2 passes vprecycle here instead of NULL.
+	 */
+	if (error == 0 && tip)
+		hammer2_inode_unlink_finisher(tip, NULL);
+
+	/* Update directory mtimes to represent the something changed. */
+	if (update_fdip || update_tdip) {
+		hammer2_update_time(&mtime);
+		if (update_fdip) {
+			hammer2_inode_modify(fdip);
+			fdip->meta.mtime = mtime;
+		}
+		if (update_tdip) {
+			hammer2_inode_modify(tdip);
+			tdip->meta.mtime = mtime;
+		}
+	}
+	if (tip) {
+		hammer2_inode_unlock(tip);
+		hammer2_inode_drop(tip);
+	}
+	hammer2_inode_unlock(fip);
+	/*
+	 * XXX iplock: NetBSD HAMMER2 specific.
+	 * If tdip == fdip, hammer2_inode_lock4() locked only once.
+	 */
+	hammer2_inode_unlock(tdip);
+	if (tdip != fdip)
+		hammer2_inode_unlock(fdip);
+	else
+		hammer2_inode_drop(fdip); /* not locked, but ref'd */
+	hammer2_inode_drop(fip);
+	hammer2_trans_done(tdip->pmp, HAMMER2_TRANS_SIDEQ);
+
+	genfs_rename_cache_purge(fdvp, fvp, tdvp, tvp);
+
+	if (fdvp != tdvp)
+		vput(fdvp);
+	else
+		vrele(fdvp);
+	vput(fvp);
+	vput(tdvp);
+	if (tvp != NULL) {
+		if (tvp != tdvp)
+			vput(tvp);
+		else /* how ? */
+			vrele(tvp);
+	}
+	return (error);
+abortit:
+	vrele(fdvp);
+	vrele(fvp);
+	vput(tdvp);
+	if (tvp != NULL) {
+		if (tvp != tdvp)
+			vput(tvp);
+		else /* how ? */
+			vrele(tvp);
+	}
+	return (error);
 }
-#endif
 
 static int
 hammer2_link(void *v)
@@ -1610,15 +1825,14 @@ hammer2_link(void *v)
 	struct componentname *cnp = ap->a_cnp;
 	struct vnode *dvp = ap->a_dvp;
 	struct vnode *vp = ap->a_vp;
-	hammer2_inode_t *tdip; /* target directory to create link in */
-	hammer2_inode_t *ip; /* inode we are hardlinking to */
+	hammer2_inode_t *tdip = VTOI(dvp); /* target directory to create link in */
+	hammer2_inode_t *ip = VTOI(vp); /* inode we are hardlinking to */
 	uint64_t cmtime;
 	int error;
 
 	if (dvp->v_mount != vp->v_mount)
 		return (EXDEV);
 
-	tdip = VTOI(dvp);
 	if (tdip->pmp->rdonly || (tdip->pmp->flags & HAMMER2_PMPF_EMERG))
 		return (EROFS);
 	if (hammer2_vfs_enospace(tdip, 0, cnp->cn_cred) > 1)
@@ -1635,7 +1849,6 @@ hammer2_link(void *v)
 	 * consolidation code can modify ip->cluster.  The returned cluster
 	 * is locked.
 	 */
-	ip = VTOI(vp);
 	KKASSERT(ip->pmp);
 	hammer2_trans_init(ip->pmp, 0);
 
@@ -1699,12 +1912,11 @@ hammer2_symlink(void *v)
 
 	ap->a_vap->va_type = VLNK; /* enforce type */
 
-	hammer2_trans_init(dip->pmp, 0);
-
 	/*
 	 * Create the softlink as an inode and then create the directory entry.
 	 * dip must be locked before nip to avoid deadlock.
 	 */
+	hammer2_trans_init(dip->pmp, 0);
 	inum = hammer2_trans_newinum(dip->pmp);
 
 	hammer2_inode_lock(dip, 0);
@@ -1779,7 +1991,6 @@ hammer2_symlink(void *v)
 		/*hammer2_inode_unlock(dip);*/
 	}
 	hammer2_inode_unlock(dip);
-
 	hammer2_trans_done(dip->pmp, HAMMER2_TRANS_SIDEQ);
 
 	vp = *ap->a_vpp;
@@ -1993,7 +2204,7 @@ static const struct vnodeopv_entry_desc hammer2_vnodeop_entries[] = {
 	{ &vop_seek_desc, genfs_seek },			/* seek */
 	{ &vop_remove_desc, hammer2_remove },		/* remove */
 	{ &vop_link_desc, hammer2_link },		/* link */
-	{ &vop_rename_desc, genfs_eopnotsupp },		/* rename */
+	{ &vop_rename_desc, hammer2_rename },		/* rename */
 	{ &vop_mkdir_desc, hammer2_mkdir },		/* mkdir */
 	{ &vop_rmdir_desc, hammer2_rmdir },		/* rmdir */
 	{ &vop_symlink_desc, hammer2_symlink },		/* symlink */
