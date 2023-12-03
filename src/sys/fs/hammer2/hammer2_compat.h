@@ -59,10 +59,11 @@
 /* DragonFly KKASSERT is NetBSD KASSERT equivalent. */
 #define KKASSERT	KASSERT
 
-#define atomic_set_int(p, b)	atomic_or_uint((p), (b))
-#define atomic_clear_int(p, b)	atomic_and_uint((p), ~(b))
+/* ia64 seems to have these defined. */
+#define atomic_set_int(p, v)	atomic_or_uint((p), (v))
+#define atomic_clear_int(p, v)	atomic_and_uint((p), ~(v))
 
-#define atomic_set_32		atomic_set_int
+#define atomic_set_32(p, v)	atomic_set_int((p), (v))
 
 #define atomic_cmpset_int(ptr, old, new)	\
 	(atomic_cas_uint((ptr), (old), (new)) == (old))
@@ -113,9 +114,11 @@ atomic_fetchadd_64(volatile uint64_t *p, uint64_t v)
 #define cpu_pause()	do {} while (0)
 #endif
 
-#define cpu_ccfence	__insn_barrier
+#define cpu_ccfence()	__insn_barrier()
 
 #define kstrdup(s)	kmem_strdup(s, KM_SLEEP)
 #define kstrfree(s)	kmem_strfree(s)
+
+#define bqrelse(bp, n)	brelse(bp, n)
 
 #endif /* !_FS_HAMMER2_COMPAT_H_ */

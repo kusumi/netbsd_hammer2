@@ -57,7 +57,11 @@
 #define hpanic(X, ...)	panic(HFMT X, HARGS, ## __VA_ARGS__)
 
 #ifdef INVARIANTS
+#if 0
 #define debug_hprintf	hprintf
+#else
+#define debug_hprintf(X, ...)	do { } while (0)
+#endif
 #else
 #define debug_hprintf(X, ...)	do { } while (0)
 #endif
@@ -85,26 +89,65 @@ typedef kcondvar_t hammer2_lkc_t;
  * Normal synchronous non-abortable locks can be substituted for spinlocks.
  * NetBSD HAMMER2 currently uses rwlock(9) for both mtx and spinlock.
  */
-typedef krwlock_t hammer2_mtx_t;
+struct krwlock_t_wrapper {
+	krwlock_t lock;
+	int refs;
+};
+typedef struct krwlock_t_wrapper hammer2_mtx_t;
 
-#define hammer2_mtx_init(p, s)		rw_init(p)
-#define hammer2_mtx_ex(p)		rw_enter(p, RW_WRITER)
-#define hammer2_mtx_ex_try(p)		(!rw_tryenter(p, RW_WRITER))
-#define hammer2_mtx_sh(p)		rw_enter(p, RW_READER)
-#define hammer2_mtx_sh_try(p)		(!rw_tryenter(p, RW_READER))
-#define hammer2_mtx_unlock(p)		rw_exit(p)
-#define hammer2_mtx_destroy(p)		rw_destroy(p)
-
-/* rw_tryupgrade panics on DIAGNOSTIC if already exclusively locked. */
-#define hammer2_mtx_upgrade_try(p)	(!rw_tryupgrade(p))
+#define hammer2_mtx_init(p, s)		\
+	do { bzero(p, sizeof(*(p))); rw_init(&(p)->lock); } while (0)
+#define hammer2_mtx_ex(p)		\
+	do { rw_enter(&(p)->lock, RW_WRITER); (p)->refs++; } while (0)
+#define hammer2_mtx_sh(p)		\
+	do { rw_enter(&(p)->lock, RW_READER); (p)->refs++; } while (0)
+#define hammer2_mtx_unlock(p)		\
+	do { (p)->refs--; rw_exit(&(p)->lock); } while (0)
+#define hammer2_mtx_refs(p)		((p)->refs)
+#define hammer2_mtx_destroy(p)		rw_destroy(&(p)->lock)
 
 /* Non-zero if exclusively locked by the calling thread. */
-#define hammer2_mtx_owned(p)		rw_write_held(p)
+#define hammer2_mtx_owned(p)		rw_write_held(&(p)->lock)
 
-#define hammer2_mtx_assert_ex(p)	KASSERT(rw_write_held(p))
-#define hammer2_mtx_assert_sh(p)	KASSERT(rw_read_held(p))
-#define hammer2_mtx_assert_locked(p)	KASSERT(rw_lock_held(p))
-#define hammer2_mtx_assert_unlocked(p)	KASSERT(!rw_lock_held(p))
+#define hammer2_mtx_assert_ex(p)	KASSERT(rw_write_held(&(p)->lock))
+#define hammer2_mtx_assert_sh(p)	KASSERT(rw_read_held(&(p)->lock))
+#define hammer2_mtx_assert_locked(p)	KASSERT(rw_lock_held(&(p)->lock))
+#define hammer2_mtx_assert_unlocked(p)	KASSERT(!rw_lock_held(&(p)->lock))
+
+static __inline int
+hammer2_mtx_ex_try(hammer2_mtx_t *p)
+{
+	if (rw_tryenter(&p->lock, RW_WRITER)) {
+		p->refs++;
+		return (0);
+	} else {
+		return (1);
+	}
+}
+
+static __inline int
+hammer2_mtx_sh_try(hammer2_mtx_t *p)
+{
+	if (rw_tryenter(&p->lock, RW_READER)) {
+		p->refs++;
+		return (0);
+	} else {
+		return (1);
+	}
+}
+
+static __inline int
+hammer2_mtx_upgrade_try(hammer2_mtx_t *p)
+{
+	/* rw_tryupgrade() panics with DIAGNOSTIC if already ex-locked. */
+	if (hammer2_mtx_owned(p))
+		return (0);
+
+	if (rw_tryupgrade(&p->lock))
+		return (0);
+	else
+		return (1);
+}
 
 static __inline int
 hammer2_mtx_temp_release(hammer2_mtx_t *p)

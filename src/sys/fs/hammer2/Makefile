@@ -12,6 +12,9 @@ SRCS=	hammer2_admin.c hammer2_bulkfree.c hammer2_chain.c hammer2_cluster.c \
 .if defined(HAMMER2_INVARIANTS)
 DBG+=	-DDIAGNOSTIC -DLOCKDEBUG
 .endif
+.if defined(HAMMER2_WRITE)
+DBG+=	-DHAMMER2_WRITE
+.endif
 
 WARNS=	5
 

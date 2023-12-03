@@ -198,8 +198,22 @@ hammer2_chain_alloc(hammer2_dev_t *hmp, hammer2_pfs_t *pmp,
 void
 hammer2_chain_init(hammer2_chain_t *chain)
 {
+	/*
+	 * Note that hammer2_chain_lookup() via strategy read / write can
+	 * attempt to recursively lock chain->lock for inode with DIRECTDATA.
+	 * This is possible in DragonFly and FreeBSD, but not in NetBSD.
+	 * To prevent this happening, HAMMER2_OPFLAG_DIRECTDATA is currently
+	 * disabled.  This means write always create data block(s).
+	 */
+	/*
+	 * Another NetBSD specific problem is getnewbuf() via getblk() can
+	 * attempt to grab a buffer with BO_DELWRI and bwrite(bp).  This can
+	 * cause getblk(devvp) via strategy to recursively invoke getblk(devvp)
+	 * via strategy, and end up panic with "locking against myself".
+	 * To prevent this, logical vnode is changed to not use bdwrite.
+	 */
 	RB_INIT(&chain->core.rbtree);
-	hammer2_mtx_init(&chain->lock, "h2ch_lk");
+	hammer2_mtx_init(&chain->lock, "h2ch_lk"); /* XXX chlock */
 	hammer2_mtx_init(&chain->diolk, "h2ch_dlk");
 	hammer2_lk_init(&chain->inp_lock, "h2ch_inplk");
 	hammer2_lkc_init(&chain->inp_cv, "h2ch_inplkc");
@@ -342,6 +356,11 @@ hammer2_chain_unhold(hammer2_chain_t *chain)
 			if (atomic_cmpset_int(&chain->lockcnt, lockcnt,
 			    lockcnt - 1))
 				break;
+		} else if (hammer2_mtx_owned(&chain->lock)) {
+			/* XXX2 */
+			hammer2_chain_unlock(chain);
+			hammer2_mtx_ex(&chain->lock);
+			break;
 		} else if (hammer2_mtx_ex_try(&chain->lock) == 0) {
 			hammer2_chain_unlock(chain);
 			break;
@@ -1130,8 +1149,7 @@ hammer2_chain_unlock(hammer2_chain_t *chain)
 				hammer2_mtx_unlock(&chain->lock);
 				return;
 			}
-		} else if (hammer2_mtx_owned(&chain->lock) ||
-		    hammer2_mtx_upgrade_try(&chain->lock) == 0) {
+		} else if (hammer2_mtx_upgrade_try(&chain->lock) == 0) {
 			/* While holding the mutex exclusively. */
 			if (atomic_cmpset_int(&chain->lockcnt, 1, 0))
 				break;
@@ -1771,6 +1789,21 @@ skip:
 	hammer2_mtx_unlock(&chain->diolk);
 
 	return (chain->error);
+}
+
+/*
+ * Modify the chain associated with an inode.
+ */
+int
+hammer2_chain_modify_ip(hammer2_inode_t *ip, hammer2_chain_t *chain,
+    hammer2_tid_t mtid, int flags)
+{
+	int error;
+
+	hammer2_inode_modify(ip);
+	error = hammer2_chain_modify(chain, mtid, 0, flags);
+
+	return (error);
 }
 
 /*

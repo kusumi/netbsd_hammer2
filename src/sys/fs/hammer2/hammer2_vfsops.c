@@ -78,6 +78,7 @@ static hammer2_pfslist_t hammer2_spmplist;
 
 hammer2_lk_t hammer2_mntlk;
 
+/* sysctl */
 static int hammer2_supported_version = HAMMER2_VOL_VERSION_DEFAULT;
 long hammer2_inode_allocs;
 long hammer2_chain_allocs;
@@ -85,6 +86,9 @@ long hammer2_dio_allocs;
 int hammer2_dio_limit = 256;
 int hammer2_limit_scan_depth;
 long hammer2_limit_saved_chains;
+int hammer2_always_compress;
+
+/* not sysctl */
 long hammer2_count_modified_chains;
 
 #define HAMMER2_SYSCTL_SUPPORTED_VERSION	1
@@ -94,6 +98,7 @@ long hammer2_count_modified_chains;
 #define HAMMER2_SYSCTL_DIO_LIMIT		5
 #define HAMMER2_SYSCTL_LIMIT_SCAN_DEPTH		6
 #define HAMMER2_SYSCTL_LIMIT_SAVED_CHAINS	7
+#define HAMMER2_SYSCTL_ALWAYS_COMPRESS		8
 
 SYSCTL_SETUP(hammer2_sysctl_create, "hammer2 sysctl")
 {
@@ -177,6 +182,15 @@ SYSCTL_SETUP(hammer2_sysctl_create, "hammer2 sysctl")
 	if (error)
 		goto fail;
 
+	error = sysctl_createv(clog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE,
+	    CTLTYPE_INT, "always_compress",
+	    SYSCTL_DESCR("Always try to compress write buffer"),
+	    NULL, 0, &hammer2_always_compress, 0,
+	    CTL_VFS, x, HAMMER2_SYSCTL_ALWAYS_COMPRESS, CTL_EOL);
+	if (error)
+		goto fail;
+
 	return;
 fail:
 	hprintf("sysctl_createv failed with error %d\n", error);
@@ -227,7 +241,8 @@ hammer2_init(void)
 		hammer2_dio_limit = 100000;
 
 	/*
-	 * A pool for read buffer with size of 65536 exceeds limit.
+	 * Note that buffers for strategy read/write use malloc(9) as they
+	 * exceed limitation of pool(9) size.
 	 * "pool item size (65536) larger than page size (4096)"
 	 */
 	pool_init(&hammer2_inode_pool, sizeof(hammer2_inode_t), 0, 0, 0,
@@ -685,8 +700,8 @@ hammer2_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	label = strchr(devstr, '@');
 	if (label == NULL || label[1] == 0) {
 		/*
-		 * DragonFly uses either "BOOT", "ROOT" or "DATA" based
-		 * on label[-1].  In NetBSD, simply use "DATA" by default.
+		 * DragonFly HAMMER2 uses either "BOOT", "ROOT" or "DATA"
+		 * based on label[-1].
 		 */
 		label = __DECONST(char *, "DATA");
 	} else {
@@ -1376,7 +1391,7 @@ again:
 	hammer2_mtx_ex(&hmp->iotree_lock);
 	hammer2_io_cleanup(hmp, &hmp->iotree);
 	if (hmp->iofree_count) {
-		hprintf("%d I/O's left hanging\n", hmp->iofree_count);
+		hprintf("XXX %d I/O's left hanging\n", hmp->iofree_count);
 		//KKASSERT(0); /* XXX2 enable this */
 	}
 	hammer2_mtx_unlock(&hmp->iotree_lock);
@@ -1702,7 +1717,7 @@ hammer2_vfs_sync_pmp(hammer2_pfs_t *pmp, int waitfor __unused)
 	hammer2_depend_t *depend, *depend_next;
 	struct vnode *vp;
 	uint32_t pass2;
-	int error, dorestart;
+	int error, dorestart, ndrop;
 
 	/*
 	 * Move all inodes on sideq to syncq.  This will clear sideq.
@@ -1826,7 +1841,7 @@ restart:
 		 * the whole SIDEQ back to SYNCQ when we restart.
 		 */
 		vp = ip->vp; /* NULL after vflush() */
-		if (vp) {
+		if (vp && vrefcnt(vp) > 0) {
 			vref(vp); /* requires vrefcnt(vp) > 0 */
 			if (vn_lock(vp, LK_EXCLUSIVE | LK_NOWAIT)) {
 				/*
@@ -1879,10 +1894,12 @@ restart:
 		 * meat of the flush.
 		 */
 		if (vp) {
+			hammer2_mtx_unlock(&ip->lock); /* XXX iplock */
 			if (vp->v_type == VBLK)
 				error = 0;
 			else
 				error = vflushbuf(vp, FSYNC_WAIT);
+			hammer2_mtx_ex(&ip->lock);
 			if (error) {
 				hprintf("inum %016jx vnode flush failed %d\n",
 				    (intmax_t)ip->meta.inum, error);
@@ -1940,9 +1957,10 @@ restart:
 			} else {
 				hammer2_inode_delayed_sideq(ip);
 			}
+			ndrop = ip->vhold;
 			vput(vp);
 			hammer2_mtx_unlock(&ip->lock); /* XXX iplock */
-			hammer2_inode_vdrop_all(ip);
+			hammer2_inode_vdrop(ip, ndrop);
 			hammer2_mtx_ex(&ip->lock);
 			vp = NULL; /* safety */
 		}
@@ -2344,6 +2362,13 @@ hammer2_vfs_enospace(hammer2_inode_t *ip, off_t bytes, kauth_cred_t cred)
 	return (0);
 }
 
+static int
+hammer2_gop_alloc(struct vnode *vp, off_t off, off_t len, int flags,
+    kauth_cred_t cred)
+{
+	return (0);
+}
+
 static const struct vnodeopv_desc * const hammer2_vnodeopv_descs[] = {
 	&hammer2_vnodeop_opv_desc,
 	&hammer2_specop_opv_desc,
@@ -2381,6 +2406,9 @@ static struct vfsops hammer2_vfsops = {
 
 static const struct genfs_ops hammer2_genfsops = {
 	.gop_size = genfs_size,
+	.gop_alloc = hammer2_gop_alloc,
+	.gop_write = genfs_compat_gop_write,
+	.gop_putrange = genfs_gop_putrange,
 };
 
 static int
