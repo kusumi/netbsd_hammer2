@@ -71,30 +71,43 @@ H2XOPDESCRIPTOR(bmap);
  * threads wait for frontend to collect results.
  */
 static void
-hammer2_xop_fifo_alloc(hammer2_xop_fifo_t *fifo, size_t nmemb)
+hammer2_xop_fifo_alloc(hammer2_xop_fifo_t *fifo, size_t new_nmemb,
+    size_t old_nmemb)
 {
 	int flags = M_WAITOK | M_ZERO;
-	size_t size;
+	size_t new_size, old_size;
 
-	/* Assert nmemb requirements. */
-	KKASSERT((nmemb & (nmemb - 1)) == 0);
-	KKASSERT(nmemb >= HAMMER2_XOPFIFO);
+	/* Assert new vs old nmemb requirements. */
+	KKASSERT(new_nmemb > old_nmemb);
+	if (old_nmemb == 0)
+		KKASSERT(!fifo->array && !fifo->errors);
+	else
+		KKASSERT(fifo->array && fifo->errors);
+
+	/* Assert new_nmemb requirements. */
+	KKASSERT((new_nmemb & (new_nmemb - 1)) == 0);
+	KKASSERT(new_nmemb >= HAMMER2_XOPFIFO);
 
 	/* malloc or realloc fifo array. */
-	size = nmemb * sizeof(hammer2_chain_t *);
+	new_size = new_nmemb * sizeof(hammer2_chain_t *);
+	old_size = old_nmemb * sizeof(hammer2_chain_t *);
 	if (!fifo->array)
-		fifo->array = malloc(size, M_HAMMER2, flags);
+		fifo->array = hmalloc(new_size, M_HAMMER2, flags);
 	else
-		fifo->array = realloc(fifo->array, size, M_HAMMER2, flags);
+		fifo->array = hrealloc(fifo->array, new_size, M_HAMMER2, flags);
 	KKASSERT(fifo->array);
+	adjust_malloc_leak(-old_size, M_HAMMER2);
 
 	/* malloc or realloc fifo errors. */
-	size = nmemb * sizeof(int);
+	new_size = new_nmemb * sizeof(int);
+	old_size = old_nmemb * sizeof(int);
 	if (!fifo->errors)
-		fifo->errors = malloc(size, M_HAMMER2, flags);
+		fifo->errors = hmalloc(new_size, M_HAMMER2, flags);
 	else
-		fifo->errors = realloc(fifo->errors, size, M_HAMMER2, flags);
+		fifo->errors = hrealloc(fifo->errors, new_size, M_HAMMER2,
+		    flags);
 	KKASSERT(fifo->errors);
+	adjust_malloc_leak(-old_size, M_HAMMER2);
 }
 
 /*
@@ -107,7 +120,7 @@ hammer2_xop_alloc(hammer2_inode_t *ip, int flags)
 {
 	hammer2_xop_t *xop;
 
-	xop = pool_get(&hammer2_xops_pool, PR_WAITOK | PR_ZERO);
+	xop = pool_get(&hammer2_pool_xops, PR_WAITOK | PR_ZERO);
 	KKASSERT(xop->head.cluster.array[0].chain == NULL);
 
 	xop->head.ip1 = ip;
@@ -127,7 +140,7 @@ hammer2_xop_alloc(hammer2_inode_t *ip, int flags)
 
 	hammer2_xop_fifo_t *fifo = &xop->head.collect[0];
 	xop->head.fifo_size = HAMMER2_XOPFIFO;
-	hammer2_xop_fifo_alloc(fifo, xop->head.fifo_size);
+	hammer2_xop_fifo_alloc(fifo, xop->head.fifo_size, 0);
 
 	hammer2_inode_ref(ip);
 
@@ -137,7 +150,7 @@ hammer2_xop_alloc(hammer2_inode_t *ip, int flags)
 void
 hammer2_xop_setname(hammer2_xop_head_t *xop, const char *name, size_t name_len)
 {
-	xop->name1 = malloc(name_len + 1, M_HAMMER2, M_WAITOK | M_ZERO);
+	xop->name1 = hmalloc(name_len + 1, M_HAMMER2, M_WAITOK | M_ZERO);
 	xop->name1_len = name_len;
 	bcopy(name, xop->name1, name_len);
 }
@@ -145,7 +158,7 @@ hammer2_xop_setname(hammer2_xop_head_t *xop, const char *name, size_t name_len)
 void
 hammer2_xop_setname2(hammer2_xop_head_t *xop, const char *name, size_t name_len)
 {
-	xop->name2 = malloc(name_len + 1, M_HAMMER2, M_WAITOK | M_ZERO);
+	xop->name2 = hmalloc(name_len + 1, M_HAMMER2, M_WAITOK | M_ZERO);
 	xop->name2_len = name_len;
 	bcopy(name, xop->name2, name_len);
 }
@@ -155,7 +168,7 @@ hammer2_xop_setname_inum(hammer2_xop_head_t *xop, hammer2_key_t inum)
 {
 	const size_t name_len = 18;
 
-	xop->name1 = malloc(name_len + 1, M_HAMMER2, M_WAITOK | M_ZERO);
+	xop->name1 = hmalloc(name_len + 1, M_HAMMER2, M_WAITOK | M_ZERO);
 	xop->name1_len = name_len;
 	snprintf(xop->name1, name_len + 1, "0x%016jx", (intmax_t)inum);
 
@@ -307,7 +320,7 @@ hammer2_xop_start(hammer2_xop_head_t *xop, hammer2_xop_desc_t *desc)
 	xop->desc = desc;
 
 	if (desc == &hammer2_strategy_write_desc)
-		xop->scratch = malloc(hammer2_get_logical(), M_HAMMER2,
+		xop->scratch = hmalloc(hammer2_get_logical(), M_HAMMER2,
 		    M_WAITOK | M_ZERO);
 
 	for (i = 0; i < ip->cluster.nchains; ++i) {
@@ -342,10 +355,11 @@ hammer2_xop_start(hammer2_xop_head_t *xop, hammer2_xop_desc_t *desc)
 void
 hammer2_xop_retire(hammer2_xop_head_t *xop, uint32_t mask)
 {
-	hammer2_chain_t *chain;
+	hammer2_chain_t *chain, *dropch[HAMMER2_MAXCLUSTER];
+	hammer2_inode_t *ip;
 	hammer2_xop_fifo_t *fifo;
 	uint32_t omask;
-	int i;
+	int prior_nchains, i;
 
 	/* Remove the frontend collector or remove a backend feeder. */
 	KASSERTMSG(xop->run_mask & mask,
@@ -360,6 +374,46 @@ hammer2_xop_retire(hammer2_xop_head_t *xop, uint32_t mask)
 	 * All collectors are gone, we can cleanup and dispose of the XOP.
 	 * Cleanup the collection cluster.
 	 */
+	/*
+	 * Cleanup the xop's cluster.  If there is an inode reference,
+	 * cache the cluster chains in the inode to improve performance,
+	 * preventing them from recursively destroying the chain recursion.
+	 *
+	 * Note that ip->ccache[i] does NOT necessarily represent usable
+	 * chains or chains that are related to the inode.  The chains are
+	 * simply held to prevent bottom-up lastdrop destruction of
+	 * potentially valuable resolved chain data.
+	 */
+	if (xop->ip1) {
+		/*
+		 * Cache cluster chains in a convenient inode.  The chains
+		 * are cache ref'd but not held.  The inode simply serves
+		 * as a place to cache the chains to prevent the chains
+		 * from being cleaned up.
+		 */
+		ip = xop->ip1;
+		hammer2_spin_ex(&ip->cluster_spin);
+		prior_nchains = ip->ccache_nchains;
+		for (i = 0; i < prior_nchains; ++i) {
+			dropch[i] = ip->ccache[i].chain;
+			ip->ccache[i].chain = NULL;
+		}
+		for (i = 0; i < xop->cluster.nchains; ++i) {
+			ip->ccache[i] = xop->cluster.array[i];
+			if (ip->ccache[i].chain)
+				hammer2_chain_ref(ip->ccache[i].chain);
+		}
+		ip->ccache_nchains = i;
+		hammer2_spin_unex(&ip->cluster_spin);
+
+		/* Drop prior cache. */
+		for (i = 0; i < prior_nchains; ++i) {
+			chain = dropch[i];
+			if (chain)
+				hammer2_chain_drop(chain);
+		}
+	}
+
 	for (i = 0; i < xop->cluster.nchains; ++i) {
 		xop->cluster.array[i].flags = 0;
 		chain = xop->cluster.array[i].chain;
@@ -410,26 +464,29 @@ hammer2_xop_retire(hammer2_xop_head_t *xop, uint32_t mask)
 	}
 
 	if (xop->name1) {
-		free(xop->name1, M_HAMMER2);
+		hfree(xop->name1, M_HAMMER2, strlen(xop->name1) + 1);
 		xop->name1 = NULL;
 		xop->name1_len = 0;
 	}
 	if (xop->name2) {
-		free(xop->name2, M_HAMMER2);
+		hfree(xop->name2, M_HAMMER2, strlen(xop->name2) + 1);
 		xop->name2 = NULL;
 		xop->name2_len = 0;
 	}
 
 	for (i = 0; i < xop->cluster.nchains; ++i) {
 		fifo = &xop->collect[i];
-		free(fifo->array, M_HAMMER2);
-		free(fifo->errors, M_HAMMER2);
+		KKASSERT(fifo->array == NULL || xop->fifo_size > 0);
+		KKASSERT(fifo->errors == NULL || xop->fifo_size > 0);
+		hfree(fifo->array, M_HAMMER2,
+		    xop->fifo_size * sizeof(hammer2_chain_t *));
+		hfree(fifo->errors, M_HAMMER2, xop->fifo_size * sizeof(int));
 	}
 
 	if (xop->scratch)
-		free(xop->scratch, M_HAMMER2);
+		hfree(xop->scratch, M_HAMMER2, hammer2_get_logical());
 
-	pool_put(&hammer2_xops_pool, xop);
+	pool_put(&hammer2_pool_xops, xop);
 }
 
 /*
@@ -453,6 +510,7 @@ hammer2_xop_feed(hammer2_xop_head_t *xop, hammer2_chain_t *chain, int clindex,
     int error)
 {
 	hammer2_xop_fifo_t *fifo;
+	size_t old_fifo_size;
 
 	/* Early termination (typically of xop_readir). */
 	if (hammer2_xop_active(xop) == 0) {
@@ -470,8 +528,9 @@ hammer2_xop_feed(hammer2_xop_head_t *xop, hammer2_chain_t *chain, int clindex,
 			error = HAMMER2_ERROR_ABORTED;
 			goto done;
 		}
+		old_fifo_size = xop->fifo_size;
 		xop->fifo_size *= 2;
-		hammer2_xop_fifo_alloc(fifo, xop->fifo_size);
+		hammer2_xop_fifo_alloc(fifo, xop->fifo_size, old_fifo_size);
 	}
 
 	if (chain)

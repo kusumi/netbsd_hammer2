@@ -42,6 +42,12 @@
 #include <sys/systm.h>
 #include <sys/proc.h>
 #include <sys/rwlock.h>
+#include <sys/malloc.h>
+#include <sys/pool.h>
+#include <sys/vnode.h>
+#include <sys/atomic.h>
+
+#include "hammer2_compat.h"
 
 #ifdef INVARIANTS
 #define HFMT	"%s(%s|%d): "
@@ -60,10 +66,10 @@
 #if 0
 #define debug_hprintf	hprintf
 #else
-#define debug_hprintf(X, ...)	do { } while (0)
+#define debug_hprintf(X, ...)	do {} while (0)
 #endif
 #else
-#define debug_hprintf(X, ...)	do { } while (0)
+#define debug_hprintf(X, ...)	do {} while (0)
 #endif
 
 /* hammer2_lk is lockmgr(9) in DragonFly. */
@@ -182,5 +188,136 @@ typedef krwlock_t hammer2_spin_t;
 #define hammer2_spin_assert_sh(p)	KASSERT(rw_read_held(p))
 #define hammer2_spin_assert_locked(p)	KASSERT(rw_lock_held(p))
 #define hammer2_spin_assert_unlocked(p)	KASSERT(!rw_lock_held(p))
+
+MALLOC_DECLARE(M_HAMMER2);
+MALLOC_DECLARE(M_HAMMER2_RBUF);
+MALLOC_DECLARE(M_HAMMER2_WBUF);
+MALLOC_DECLARE(C_HASHTABLE);
+MALLOC_DECLARE(M_TEMP); /* nonexistent in sys/sys/malloc.h */
+extern struct pool hammer2_pool_inode;
+extern struct pool hammer2_pool_xops;
+
+extern int malloc_leak_m_hammer2;
+extern int malloc_leak_m_hammer2_rbuf;
+extern int malloc_leak_m_hammer2_wbuf;
+extern int malloc_leak_m_hammer2_lz4;
+extern int malloc_leak_m_temp;
+
+#ifdef HAMMER2_MALLOC
+static __inline void
+adjust_malloc_leak(int delta, struct malloc_type *type)
+{
+	int *lp;
+
+	if (type == M_HAMMER2)
+		lp = &malloc_leak_m_hammer2;
+	else if (type == M_HAMMER2_RBUF)
+		lp = &malloc_leak_m_hammer2_rbuf;
+	else if (type == M_HAMMER2_WBUF)
+		lp = &malloc_leak_m_hammer2_wbuf;
+	else if (type == C_HASHTABLE)
+		lp = &malloc_leak_m_hammer2_lz4;
+	else if (type == M_TEMP)
+		lp = &malloc_leak_m_temp;
+	else
+		hpanic("bad malloc type");
+
+	atomic_add_int(lp, delta);
+}
+
+static __inline void *
+hmalloc(size_t size, struct malloc_type *type, int flags)
+{
+	void *addr;
+
+	flags &= ~M_WAITOK;
+	flags |= M_NOWAIT;
+
+	addr = malloc(size, type, flags);
+	KASSERTMSG(addr, "size %ld flags %x malloc_leak %d,%d,%d,%d,%d",
+	    (long)size, flags,
+	    malloc_leak_m_hammer2,
+	    malloc_leak_m_hammer2_rbuf,
+	    malloc_leak_m_hammer2_wbuf,
+	    malloc_leak_m_hammer2_lz4,
+	    malloc_leak_m_temp);
+	if (addr) {
+		KKASSERT(size > 0);
+		adjust_malloc_leak(size, type);
+	}
+
+	return (addr);
+}
+
+static __inline void *
+hrealloc(void *addr, size_t size, struct malloc_type *type, int flags)
+{
+	flags &= ~M_WAITOK;
+	flags |= M_NOWAIT;
+
+	addr = realloc(addr, size, type, flags);
+	KASSERTMSG(addr, "size %ld flags %x malloc_leak %d,%d,%d",
+	    (long)size, flags,
+	    malloc_leak_m_hammer2,
+	    malloc_leak_m_hammer2_lz4,
+	    malloc_leak_m_temp);
+	if (addr) {
+		KKASSERT(size > 0);
+		adjust_malloc_leak(size, type);
+	}
+
+	return (addr);
+}
+
+/* OpenBSD style free(9) with 3 arguments */
+static __inline void
+hfree(void *addr, struct malloc_type *type, size_t freedsize)
+{
+	if (addr) {
+		KKASSERT(freedsize > 0);
+		adjust_malloc_leak(-(int)freedsize, type);
+	}
+	free(addr, type);
+}
+
+static __inline char *
+hstrdup(const char *str)
+{
+	size_t len;
+	char *copy;
+
+	len = strlen(str) + 1;
+	copy = hmalloc(len, M_TEMP, M_NOWAIT);
+	if (copy == NULL)
+		return (NULL);
+	bcopy(str, copy, len);
+
+	return (copy);
+}
+
+static __inline void
+hstrfree(char *str)
+{
+	hfree(str, M_TEMP, strlen(str) + 1);
+}
+#else
+static __inline void
+adjust_malloc_leak(int delta __unused, struct malloc_type *type __unused)
+{
+}
+#define hmalloc(size, type, flags)		malloc(size, type, flags)
+#define hrealloc(addr, size, type, flags)	realloc(addr, size, type, flags)
+#define hfree(addr, type, freedsize)		free(addr, type)
+#define hstrdup(str)				kmem_strdup(str, KM_SLEEP)
+#define hstrfree(str)				kmem_strfree(str)
+#endif
+
+extern int (**hammer2_vnodeop_p)(void *);
+extern int (**hammer2_specop_p)(void *);
+extern int (**hammer2_fifoop_p)(void *);
+
+extern const struct vnodeopv_desc hammer2_vnodeop_opv_desc;
+extern const struct vnodeopv_desc hammer2_specop_opv_desc;
+extern const struct vnodeopv_desc hammer2_fifoop_opv_desc;
 
 #endif /* !_FS_HAMMER2_OS_H_ */

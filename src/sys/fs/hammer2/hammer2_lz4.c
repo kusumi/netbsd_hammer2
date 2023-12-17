@@ -119,7 +119,7 @@ Note : this source file requires "hammer2_lz4_encoder.h"
 
 #ifdef _KERNEL
 //Declaration for kmalloc functions
-/* static */ MALLOC_DEFINE(C_HASHTABLE, "comphashtable",
+MALLOC_DEFINE(C_HASHTABLE, "comphashtable",
 	"A hash table used by LZ4 compression function.");
 #endif
 
@@ -340,7 +340,7 @@ void*
 LZ4_create(void)
 {
 #ifdef _KERNEL
-	return malloc(HASHTABLESIZE, C_HASHTABLE, M_WAITOK);
+	return hmalloc(HASHTABLESIZE, C_HASHTABLE, M_WAITOK);
 #else
 	return malloc(HASHTABLESIZE);
 #endif
@@ -350,7 +350,7 @@ int
 LZ4_free(void* ctx)
 {
 #ifdef _KERNEL
-	free(ctx, C_HASHTABLE);
+	hfree(ctx, C_HASHTABLE, HASHTABLESIZE);
 #else
 	free(ctx);
 #endif

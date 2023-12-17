@@ -70,19 +70,22 @@ mount_hammer2_parseargs(int argc, char **argv,
 	char *canon_dev, char *canon_dir)
 {
 	mntoptparse_t mp;
-	char *val;
-	int ch;
+	char *val, **argp;
+	int ch, initflags = 0;
 
 	memset(args, 0, sizeof(*args));
 	*mntflags = 0;
 	optind = optreset = 1; /* Reset for parse of new argv. */
-	while ((ch = getopt(argc, argv, "o:")) != -1) {
+	while ((ch = getopt(argc, argv, "o:u")) != -1) {
 		switch (ch) {
 		case 'o':
 			mp = getmntopts(optarg, mopts, mntflags, 0);
 			if (mp == NULL)
 				err(1, "getmntopts");
 			freemntopts(mp);
+			break;
+		case 'u':
+			initflags |= MNT_UPDATE;
 			break;
 		case '?':
 		default:
@@ -92,6 +95,17 @@ mount_hammer2_parseargs(int argc, char **argv,
 	}
 	argc -= optind;
 	argv += optind;
+	argp = argv;
+	*mntflags |= initflags;
+
+	/* Only the mount point need be specified in update mode. */
+	if (initflags & MNT_UPDATE) {
+		if (argc != 1) {
+			usage("missing parameter (node)");
+			/* not reached */
+		}
+		goto ignore_special;
+	}
 
 	if (argc != 2) {
 		usage("missing parameter(s) (special[@label] node)");
@@ -99,8 +113,7 @@ mount_hammer2_parseargs(int argc, char **argv,
 	}
 
 	/* pathadj doesn't work with multi-volumes. */
-	strlcpy(canon_dev, argv[0], MAXPATHLEN);
-	pathadj(argv[1], canon_dir);
+	strlcpy(canon_dev, *argp, MAXPATHLEN);
 
 	/* Automatically add @DATA if no label specified. */
 	if (strchr(canon_dev, '@') == NULL) {
@@ -120,6 +133,9 @@ mount_hammer2_parseargs(int argc, char **argv,
 	}
 
 	args->fspec = canon_dev;
+	argp++;
+ignore_special:
+	pathadj(*argp, canon_dir);
 }
 
 int
@@ -170,6 +186,7 @@ usage(const char *ctl, ...)
 	fprintf(stderr, "\n");
 	fprintf(stderr, " mount_hammer2 [-o options] special[@label] node\n");
 	fprintf(stderr, " mount_hammer2 [-o options] @label node\n");
+	fprintf(stderr, " mount_hammer2 -u [-o options] node\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, "options:\n"
 			" <standard_mount_options>\n"

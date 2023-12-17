@@ -116,9 +116,6 @@ atomic_fetchadd_64(volatile uint64_t *p, uint64_t v)
 
 #define cpu_ccfence()	__insn_barrier()
 
-#define kstrdup(s)	kmem_strdup(s, KM_SLEEP)
-#define kstrfree(s)	kmem_strfree(s)
-
 #define bqrelse(bp, n)	brelse(bp, n)
 
 #endif /* !_FS_HAMMER2_COMPAT_H_ */

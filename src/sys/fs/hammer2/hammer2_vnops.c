@@ -568,7 +568,7 @@ hammer2_readdir(void *v)
 		ncookies = uio->uio_resid / 16 + 1;
 		if (ncookies > 1024)
 			ncookies = 1024;
-		cookies = malloc(ncookies * sizeof(off_t), M_TEMP, M_WAITOK);
+		cookies = hmalloc(ncookies * sizeof(off_t), M_TEMP, M_WAITOK);
 	} else {
 		ncookies = -1;
 		cookies = NULL;
@@ -688,7 +688,7 @@ done:
 
 	if (error && cookie_index == 0) {
 		if (cookies) {
-			free(cookies, M_TEMP);
+			hfree(cookies, M_TEMP, ncookies * sizeof(off_t));
 			*ap->a_ncookies = 0;
 			*ap->a_cookies = NULL;
 		}
@@ -2330,8 +2330,7 @@ hammer2_pathconf(void *v)
  * Initialize the vnode associated with a new inode, handle aliased vnodes.
  */
 int
-hammer2_vinit(struct mount *mntp, int (**specops)(void *),
-    int (**fifoops)(void *), struct vnode **vpp)
+hammer2_vinit(struct mount *mp, struct vnode **vpp)
 {
 	struct vnode *vp = *vpp;
 	hammer2_inode_t *ip = VTOI(vp);
@@ -2340,11 +2339,11 @@ hammer2_vinit(struct mount *mntp, int (**specops)(void *),
 	switch (vp->v_type) {
 	case VCHR:
 	case VBLK:
-		vp->v_op = specops;
+		vp->v_op = hammer2_specop_p;
 		spec_node_init(vp, (dev_t)(uintptr_t)vp);
 		break;
 	case VFIFO:
-		vp->v_op = fifoops;
+		vp->v_op = hammer2_fifoop_p;
 		break;
 	case VNON:
 	case VBAD:
@@ -2359,7 +2358,7 @@ hammer2_vinit(struct mount *mntp, int (**specops)(void *),
 	}
 
 	if (ip->meta.inum == 1)
-                vp->v_vflag |= VV_ROOT;
+		vp->v_vflag |= VV_ROOT;
 	*vpp = vp;
 
 	return (0);
