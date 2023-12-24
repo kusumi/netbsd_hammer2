@@ -110,8 +110,9 @@ hammer2_io_alloc(hammer2_dev_t *hmp, hammer2_off_t data_off, uint8_t btype,
 	pbase = lbase & pmask;
 
 	if (pbase == 0 || ((lbase + lsize - 1) & pmask) != pbase)
-		hpanic("illegal base: %016jx %016jx+%08x / %016jx",
-		    (intmax_t)pbase, (intmax_t)lbase, lsize, (intmax_t)pmask);
+		hpanic("illegal base: %016llx %016llx+%08x / %016llx",
+		    (long long)pbase, (long long)lbase, lsize,
+		    (long long)pmask);
 
 	/* Access or allocate dio, bump dio->refs to prevent destruction. */
 	dio = hammer2_io_hash_lookup(hmp, pbase, NULL);
@@ -133,7 +134,7 @@ hammer2_io_alloc(hammer2_dev_t *hmp, hammer2_off_t data_off, uint8_t btype,
 		hammer2_mtx_ex(&dio->lock);
 		xio = hammer2_io_hash_enter(hmp, dio, NULL);
 		if (xio == NULL) {
-			atomic_add_long(&hammer2_count_dio_allocated, 1);
+			atomic_add_int(&hammer2_count_dio_allocated, 1);
 		} else {
 			hammer2_mtx_unlock(&dio->lock);
 			hammer2_mtx_destroy(&dio->lock);
@@ -577,7 +578,7 @@ hammer2_io_hash_cleanup(hammer2_dev_t *hmp, int dio_limit)
 			cleanapp = &dio->next;
 			--count;
 			/* diop remains unchanged */
-			atomic_add_long(&hammer2_count_dio_allocated, -1);
+			atomic_add_int(&hammer2_count_dio_allocated, -1);
 			atomic_add_int(&hmp->iofree_count, -1);
 		}
 		//hammer2_spin_unex(&hash->spin);
@@ -591,8 +592,8 @@ hammer2_io_hash_cleanup(hammer2_dev_t *hmp, int dio_limit)
 		KKASSERT(dio->bp == NULL &&
 		    (dio->refs & HAMMER2_DIO_MASK) == 0);
 		if (dio->refs & HAMMER2_DIO_DIRTY)
-			hprintf("dirty buffer %016jx/%d\n",
-			    dio->pbase, dio->psize);
+			hprintf("dirty buffer %016llx/%d\n",
+			    (long long)dio->pbase, dio->psize);
 		hammer2_mtx_destroy(&dio->lock);
 		hfree(dio, M_HAMMER2, sizeof(*dio));
 	}
@@ -618,11 +619,11 @@ hammer2_io_hash_cleanup_all(hammer2_dev_t *hmp)
 			KKASSERT(dio->bp == NULL &&
 			    (dio->refs & HAMMER2_DIO_MASK) == 0);
 			if (dio->refs & HAMMER2_DIO_DIRTY)
-				hprintf("dirty buffer %016jx/%d\n",
-				    dio->pbase, dio->psize);
+				hprintf("dirty buffer %016llx/%d\n",
+				    (long long)dio->pbase, dio->psize);
 			hammer2_mtx_destroy(&dio->lock);
 			hfree(dio, M_HAMMER2, sizeof(*dio));
-			atomic_add_long(&hammer2_count_dio_allocated, -1);
+			atomic_add_int(&hammer2_count_dio_allocated, -1);
 			atomic_add_int(&hmp->iofree_count, -1);
 		}
 	}
@@ -710,8 +711,8 @@ hammer2_io_dedup_delete(hammer2_dev_t *hmp, uint8_t btype,
 		    (data_off & ~HAMMER2_OFF_MASK_RADIX) +
 		    (hammer2_off_t)bytes >
 		    (hammer2_off_t)dio->pbase + dio->psize)
-			hpanic("bad data_off %016jx/%d %016jx",
-			    (intmax_t)data_off, bytes, (intmax_t)dio->pbase);
+			hpanic("bad data_off %016llx/%d %016llx",
+			    (long long)data_off, bytes, (long long)dio->pbase);
 
 		mask = hammer2_dedup_mask(dio, data_off, bytes);
 		dio->dedup_alloc &= ~mask;
@@ -742,10 +743,10 @@ hammer2_io_dedup_assert(hammer2_dev_t *hmp, hammer2_off_t data_off,
 
 		KASSERTMSG((dio->dedup_alloc &
 		    hammer2_dedup_mask(dio, data_off, bytes)) == 0,
-		    "%016jx/%d %016jx/%016jx",
-		    (intmax_t)data_off, bytes,
-		    (intmax_t)hammer2_dedup_mask(dio, data_off, bytes),
-		    (intmax_t)dio->dedup_alloc);
+		    "%016llx/%d %016llx/%016llx",
+		    (long long)data_off, bytes,
+		    (long long)hammer2_dedup_mask(dio, data_off, bytes),
+		    (long long)dio->dedup_alloc);
 
 		hammer2_mtx_unlock(&dio->lock);
 		hammer2_io_putblk(&dio);

@@ -41,6 +41,8 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/proc.h>
+#include <sys/mutex.h>
+#include <sys/condvar.h>
 #include <sys/rwlock.h>
 #include <sys/malloc.h>
 #include <sys/pool.h>
@@ -192,7 +194,7 @@ typedef krwlock_t hammer2_spin_t;
 MALLOC_DECLARE(M_HAMMER2);
 MALLOC_DECLARE(M_HAMMER2_RBUF);
 MALLOC_DECLARE(M_HAMMER2_WBUF);
-MALLOC_DECLARE(C_HASHTABLE);
+MALLOC_DECLARE(M_HAMMER2_LZ4);
 MALLOC_DECLARE(M_TEMP); /* nonexistent in sys/sys/malloc.h */
 extern struct pool hammer2_pool_inode;
 extern struct pool hammer2_pool_xops;
@@ -215,7 +217,7 @@ adjust_malloc_leak(int delta, struct malloc_type *type)
 		lp = &malloc_leak_m_hammer2_rbuf;
 	else if (type == M_HAMMER2_WBUF)
 		lp = &malloc_leak_m_hammer2_wbuf;
-	else if (type == C_HASHTABLE)
+	else if (type == M_HAMMER2_LZ4)
 		lp = &malloc_leak_m_hammer2_lz4;
 	else if (type == M_TEMP)
 		lp = &malloc_leak_m_temp;

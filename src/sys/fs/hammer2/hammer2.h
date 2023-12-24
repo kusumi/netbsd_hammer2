@@ -70,13 +70,10 @@
 #include <sys/kernel.h>
 #include <sys/errno.h>
 #include <sys/buf.h>
-#include <sys/namei.h>
 #include <sys/mount.h>
 #include <sys/vnode.h>
 #include <sys/queue.h>
 #include <sys/tree.h>
-#include <sys/mutex.h>
-#include <sys/condvar.h>
 #include <sys/uuid.h>
 #include <sys/stat.h>
 #include <sys/kauth.h>
@@ -918,14 +915,14 @@ extern struct hammer2_pfslist hammer2_pfslist;
 extern hammer2_lk_t hammer2_mntlk;
 
 extern int hammer2_dedup_enable;
-extern long hammer2_count_inode_allocated;
-extern long hammer2_count_chain_allocated;
-extern long hammer2_count_chain_modified;
-extern long hammer2_count_dio_allocated;
+extern int hammer2_count_inode_allocated;
+extern int hammer2_count_chain_allocated;
+extern int hammer2_count_chain_modified;
+extern int hammer2_count_dio_allocated;
 extern int hammer2_dio_limit;
 extern int hammer2_bulkfree_tps;
 extern int hammer2_limit_scan_depth;
-extern long hammer2_limit_saved_chains;
+extern int hammer2_limit_saved_chains;
 extern int hammer2_always_compress;
 
 extern hammer2_xop_desc_t hammer2_ipcluster_desc;

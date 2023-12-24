@@ -82,14 +82,14 @@ hammer2_lk_t hammer2_mntlk;
 /* sysctl */
 static int hammer2_supported_version = HAMMER2_VOL_VERSION_DEFAULT;
 int hammer2_dedup_enable = 1;
-long hammer2_count_inode_allocated;
-long hammer2_count_chain_allocated;
-long hammer2_count_chain_modified;
-long hammer2_count_dio_allocated;
+int hammer2_count_inode_allocated;
+int hammer2_count_chain_allocated;
+int hammer2_count_chain_modified;
+int hammer2_count_dio_allocated;
 int hammer2_dio_limit = 256;
 int hammer2_bulkfree_tps = 5000;
 int hammer2_limit_scan_depth;
-long hammer2_limit_saved_chains;
+int hammer2_limit_saved_chains;
 int hammer2_always_compress;
 
 /* not sysctl */
@@ -150,7 +150,7 @@ SYSCTL_SETUP(hammer2_sysctl_create, "hammer2 sysctl")
 
 	error = sysctl_createv(clog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READONLY,
-	    CTLTYPE_LONG, "inode_allocated",
+	    CTLTYPE_INT, "inode_allocated",
 	    SYSCTL_DESCR("Number of inode allocated"),
 	    NULL, 0, &hammer2_count_inode_allocated, 0,
 	    CTL_VFS, x, HAMMER2_SYSCTL_INODE_ALLOCATED, CTL_EOL);
@@ -159,7 +159,7 @@ SYSCTL_SETUP(hammer2_sysctl_create, "hammer2 sysctl")
 
 	error = sysctl_createv(clog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READONLY,
-	    CTLTYPE_LONG, "chain_allocated",
+	    CTLTYPE_INT, "chain_allocated",
 	    SYSCTL_DESCR("Number of chain allocated"),
 	    NULL, 0, &hammer2_count_chain_allocated, 0,
 	    CTL_VFS, x, HAMMER2_SYSCTL_CHAIN_ALLOCATED, CTL_EOL);
@@ -168,7 +168,7 @@ SYSCTL_SETUP(hammer2_sysctl_create, "hammer2 sysctl")
 
 	error = sysctl_createv(clog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READONLY,
-	    CTLTYPE_LONG, "chain_modified",
+	    CTLTYPE_INT, "chain_modified",
 	    SYSCTL_DESCR("Number of chain modified"),
 	    NULL, 0, &hammer2_count_chain_modified, 0,
 	    CTL_VFS, x, HAMMER2_SYSCTL_CHAIN_MODIFIED, CTL_EOL);
@@ -177,7 +177,7 @@ SYSCTL_SETUP(hammer2_sysctl_create, "hammer2 sysctl")
 
 	error = sysctl_createv(clog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READONLY,
-	    CTLTYPE_LONG, "dio_allocated",
+	    CTLTYPE_INT, "dio_allocated",
 	    SYSCTL_DESCR("Number of dio allocated"),
 	    NULL, 0, &hammer2_count_dio_allocated, 0,
 	    CTL_VFS, x, HAMMER2_SYSCTL_DIO_ALLOCATED, CTL_EOL);
@@ -213,7 +213,7 @@ SYSCTL_SETUP(hammer2_sysctl_create, "hammer2 sysctl")
 
 	error = sysctl_createv(clog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE,
-	    CTLTYPE_LONG, "limit_saved_chains",
+	    CTLTYPE_INT, "limit_saved_chains",
 	    SYSCTL_DESCR("Bulkfree saved chains limit"),
 	    NULL, 0, &hammer2_limit_saved_chains, 0,
 	    CTL_VFS, x, HAMMER2_SYSCTL_LIMIT_SAVED_CHAINS, CTL_EOL);
@@ -240,26 +240,26 @@ hammer2_assert_clean(void)
 	int error = 0;
 
 	if (hammer2_count_inode_allocated > 0) {
-		hprintf("%ld inode left\n", hammer2_count_inode_allocated);
+		hprintf("%d inode left\n", hammer2_count_inode_allocated);
 		error = EINVAL;
 	}
 	KKASSERT(hammer2_count_inode_allocated == 0);
 
 	if (hammer2_count_chain_allocated > 0) {
-		hprintf("%ld chain left\n", hammer2_count_chain_allocated);
+		hprintf("%d chain left\n", hammer2_count_chain_allocated);
 		error = EINVAL;
 	}
 	KKASSERT(hammer2_count_chain_allocated == 0);
 
 	if (hammer2_count_chain_modified > 0) {
-		hprintf("%ld modified chain left\n",
+		hprintf("%d modified chain left\n",
 		    hammer2_count_chain_modified);
 		error = EINVAL;
 	}
 	KKASSERT(hammer2_count_chain_modified == 0);
 
 	if (hammer2_count_dio_allocated > 0) {
-		hprintf("%ld dio left\n", hammer2_count_dio_allocated);
+		hprintf("%d dio left\n", hammer2_count_dio_allocated);
 		error = EINVAL;
 	}
 	KKASSERT(hammer2_count_dio_allocated == 0);
@@ -517,8 +517,8 @@ hammer2_pfsfree(hammer2_pfs_t *pmp)
 				chains_still_present = 1;
 		}
 		KASSERTMSG(iroot->refs == 1,
-		    "iroot inum %016jx refs %d not 1",
-		    (intmax_t)iroot->meta.inum, iroot->refs);
+		    "iroot inum %016llx refs %d not 1",
+		    (long long)iroot->meta.inum, iroot->refs);
 		hammer2_inode_drop(iroot);
 		pmp->iroot = NULL;
 	}
@@ -1383,14 +1383,14 @@ again:
 	 * of these chains.
 	 */
 	if (hmp->vchain.flags & HAMMER2_CHAIN_MODIFIED) {
-		atomic_add_long(&hammer2_count_chain_modified, -1);
+		atomic_add_int(&hammer2_count_chain_modified, -1);
 		atomic_clear_int(&hmp->vchain.flags, HAMMER2_CHAIN_MODIFIED);
 	}
 	if (hmp->vchain.flags & HAMMER2_CHAIN_UPDATE)
 		atomic_clear_int(&hmp->vchain.flags, HAMMER2_CHAIN_UPDATE);
 
 	if (hmp->fchain.flags & HAMMER2_CHAIN_MODIFIED) {
-		atomic_add_long(&hammer2_count_chain_modified, -1);
+		atomic_add_int(&hammer2_count_chain_modified, -1);
 		atomic_clear_int(&hmp->fchain.flags, HAMMER2_CHAIN_MODIFIED);
 	}
 	if (hmp->fchain.flags & HAMMER2_CHAIN_UPDATE)
@@ -1492,8 +1492,8 @@ hammer2_recovery(hammer2_dev_t *hmp)
 	if (sync_tid >= mirror_tid)
 		debug_hprintf("no recovery needed\n");
 	else
-		hprintf("freemap recovery %016jx-%016jx\n",
-		    sync_tid + 1, mirror_tid);
+		hprintf("freemap recovery %016llx-%016llx\n",
+		    (long long)sync_tid + 1, (long long)mirror_tid);
 
 	TAILQ_INIT(&info.list);
 	info.depth = 0;
@@ -1907,8 +1907,8 @@ restart:
 				vrele(vp);
 				vp = NULL;
 				dorestart |= 1;
-				debug_hprintf("inum %016jx vn_lock failed\n",
-				    (intmax_t)ip->meta.inum);
+				debug_hprintf("inum %016llx vn_lock failed\n",
+				    (long long)ip->meta.inum);
 				hammer2_inode_delayed_sideq(ip);
 
 				hammer2_mtx_unlock(&ip->lock);
@@ -1957,8 +1957,8 @@ restart:
 				error = vflushbuf(vp, FSYNC_WAIT);
 			hammer2_mtx_ex(&ip->lock);
 			if (error) {
-				hprintf("inum %016jx vnode flush failed %d\n",
-				    (intmax_t)ip->meta.inum, error);
+				hprintf("inum %016llx vnode flush failed %d\n",
+				    (long long)ip->meta.inum, error);
 				error = 0; /* XXX */
 			}
 		}
@@ -1969,12 +1969,12 @@ restart:
 		 * update the parent.
 		 */
 		if (ip->flags & HAMMER2_INODE_DELETING) {
-			debug_hprintf("inum %016jx destroy\n",
-			    (intmax_t)ip->meta.inum);
+			debug_hprintf("inum %016llx destroy\n",
+			    (long long)ip->meta.inum);
 			hammer2_inode_chain_des(ip);
 		} else if (ip->flags & HAMMER2_INODE_CREATING) {
-			debug_hprintf("inum %016jx insert\n",
-			    (intmax_t)ip->meta.inum);
+			debug_hprintf("inum %016llx insert\n",
+			    (long long)ip->meta.inum);
 			hammer2_inode_chain_ins(ip);
 		}
 
@@ -1993,8 +1993,8 @@ restart:
 		 * XXX at the moment this will likely result in a double-flush
 		 * of the iroot chain.
 		 */
-		debug_hprintf("inum %016jx pinum %016jx chain-sync\n",
-		    (intmax_t)ip->meta.inum, (intmax_t)ip->meta.iparent);
+		debug_hprintf("inum %016llx pinum %016llx chain-sync\n",
+		    (long long)ip->meta.inum, (long long)ip->meta.iparent);
 		hammer2_inode_chain_sync(ip);
 
 		if (ip == pmp->iroot)
@@ -2105,7 +2105,7 @@ hammer2_loadvnode(struct mount *mp, struct vnode *vp,
 	 * ip is temporarily unlocked by caller (hammer2_igetv()).
 	 */
 	ip = hammer2_inode_lookup(pmp, inum);
-	KASSERTMSG(ip, "inode lookup failed for inum %ju", (uintmax_t)inum);
+	KASSERTMSG(ip, "inode lookup failed for inum %llu", (long long)inum);
 	hammer2_mtx_assert_unlocked(&ip->lock);
 	hammer2_assert_inode_meta(ip);
 
@@ -2203,8 +2203,9 @@ hammer2_root(struct mount *mp, int lktype, struct vnode **vpp)
 				pmp->inode_tid = HAMMER2_INODE_START;
 			pmp->modify_tid =
 			    xop->head.cluster.focus->bref.modify_tid + 1;
-			debug_hprintf("PFS nextino %016jx mod %016jx\n",
-			    (intmax_t)pmp->inode_tid, (intmax_t)pmp->modify_tid);
+			debug_hprintf("PFS nextino %016llx mod %016llx\n",
+			    (long long)pmp->inode_tid,
+			    (long long)pmp->modify_tid);
 
 			wakeup(&pmp->iroot);
 			hammer2_xop_retire(&xop->head, HAMMER2_XOPMASK_VOP);
@@ -2372,7 +2373,7 @@ void
 hammer2_voldata_modify(hammer2_dev_t *hmp)
 {
 	if ((hmp->vchain.flags & HAMMER2_CHAIN_MODIFIED) == 0) {
-		atomic_add_long(&hammer2_count_chain_modified, 1);
+		atomic_add_int(&hammer2_count_chain_modified, 1);
 		atomic_set_int(&hmp->vchain.flags, HAMMER2_CHAIN_MODIFIED);
 		hmp->vchain.bref.mirror_tid = hmp->voldata.mirror_tid + 1;
 	}
