@@ -77,20 +77,68 @@
 /* hammer2_lk is lockmgr(9) in DragonFly. */
 typedef kmutex_t hammer2_lk_t;
 
-#define hammer2_lk_init(p, s)		mutex_init(p, MUTEX_DEFAULT, IPL_NONE)
-#define hammer2_lk_ex(p)		mutex_enter(p)
-#define hammer2_lk_unlock(p)		mutex_exit(p)
-#define hammer2_lk_destroy(p)		mutex_destroy(p)
+static __inline void
+hammer2_lk_init(hammer2_lk_t *p, const char *s)
+{
+	mutex_init(p, MUTEX_DEFAULT, IPL_NONE);
+}
 
-#define hammer2_lk_assert_ex(p)		KASSERT(mutex_owned(p))
-//#define hammer2_lk_assert_unlocked(p)
+static __inline void
+hammer2_lk_ex(hammer2_lk_t *p)
+{
+	mutex_enter(p);
+}
+
+static __inline void
+hammer2_lk_unlock(hammer2_lk_t *p)
+{
+	mutex_exit(p);
+}
+
+static __inline void
+hammer2_lk_destroy(hammer2_lk_t *p)
+{
+	mutex_destroy(p);
+}
+
+static __inline void
+hammer2_lk_assert_ex(hammer2_lk_t *p)
+{
+	KASSERT(mutex_owned(p));
+}
+
+/*
+static __inline void
+hammer2_lk_assert_unlocked(hammer2_lk_t *p)
+{
+}
+*/
 
 typedef kcondvar_t hammer2_lkc_t;
 
-#define hammer2_lkc_init(c, s)		cv_init(c, s)
-#define hammer2_lkc_destroy(c)		cv_destroy(c)
-#define hammer2_lkc_sleep(c, p, s)	cv_wait(c, p)
-#define hammer2_lkc_wakeup(c)		cv_broadcast(c)
+static __inline void
+hammer2_lkc_init(hammer2_lkc_t *c, const char *s)
+{
+	cv_init(c, s);
+}
+
+static __inline void
+hammer2_lkc_destroy(hammer2_lkc_t *c)
+{
+	cv_destroy(c);
+}
+
+static __inline void
+hammer2_lkc_sleep(hammer2_lkc_t *c, hammer2_lk_t *p, const char *s)
+{
+	cv_wait(c, p);
+}
+
+static __inline void
+hammer2_lkc_wakeup(hammer2_lkc_t *c)
+{
+	cv_broadcast(c);
+}
 
 /*
  * Mutex and spinlock shims.
@@ -103,24 +151,76 @@ struct krwlock_t_wrapper {
 };
 typedef struct krwlock_t_wrapper hammer2_mtx_t;
 
-#define hammer2_mtx_init(p, s)		\
-	do { bzero(p, sizeof(*(p))); rw_init(&(p)->lock); } while (0)
-#define hammer2_mtx_ex(p)		\
-	do { rw_enter(&(p)->lock, RW_WRITER); (p)->refs++; } while (0)
-#define hammer2_mtx_sh(p)		\
-	do { rw_enter(&(p)->lock, RW_READER); (p)->refs++; } while (0)
-#define hammer2_mtx_unlock(p)		\
-	do { (p)->refs--; rw_exit(&(p)->lock); } while (0)
-#define hammer2_mtx_refs(p)		((p)->refs)
-#define hammer2_mtx_destroy(p)		rw_destroy(&(p)->lock)
+static __inline void
+hammer2_mtx_init(hammer2_mtx_t *p, const char *s)
+{
+	bzero(p, sizeof(*p));
+	rw_init(&p->lock);
+}
+
+static __inline void
+hammer2_mtx_ex(hammer2_mtx_t *p)
+{
+	rw_enter(&p->lock, RW_WRITER);
+	p->refs++;
+}
+
+static __inline void
+hammer2_mtx_sh(hammer2_mtx_t *p)
+{
+	rw_enter(&p->lock, RW_READER);
+	p->refs++;
+}
+
+static __inline void
+hammer2_mtx_unlock(hammer2_mtx_t *p)
+{
+	p->refs--;
+	rw_exit(&p->lock);
+}
+
+static __inline int
+hammer2_mtx_refs(hammer2_mtx_t *p)
+{
+	return (p->refs);
+}
+
+static __inline void
+hammer2_mtx_destroy(hammer2_mtx_t *p)
+{
+	rw_destroy(&p->lock);
+}
 
 /* Non-zero if exclusively locked by the calling thread. */
-#define hammer2_mtx_owned(p)		rw_write_held(&(p)->lock)
+static __inline int
+hammer2_mtx_owned(hammer2_mtx_t *p)
+{
+	return (rw_write_held(&p->lock));
+}
 
-#define hammer2_mtx_assert_ex(p)	KASSERT(rw_write_held(&(p)->lock))
-#define hammer2_mtx_assert_sh(p)	KASSERT(rw_read_held(&(p)->lock))
-#define hammer2_mtx_assert_locked(p)	KASSERT(rw_lock_held(&(p)->lock))
-#define hammer2_mtx_assert_unlocked(p)	KASSERT(!rw_lock_held(&(p)->lock))
+static __inline void
+hammer2_mtx_assert_ex(hammer2_mtx_t *p)
+{
+	KASSERT(rw_write_held(&p->lock));
+}
+
+static __inline void
+hammer2_mtx_assert_sh(hammer2_mtx_t *p)
+{
+	KASSERT(rw_read_held(&p->lock));
+}
+
+static __inline void
+hammer2_mtx_assert_locked(hammer2_mtx_t *p)
+{
+	KASSERT(rw_lock_held(&p->lock));
+}
+
+static __inline void
+hammer2_mtx_assert_unlocked(hammer2_mtx_t *p)
+{
+	KASSERT(!rw_lock_held(&p->lock));
+}
 
 static __inline int
 hammer2_mtx_ex_try(hammer2_mtx_t *p)
@@ -179,17 +279,65 @@ hammer2_mtx_temp_restore(hammer2_mtx_t *p, int x)
 
 typedef krwlock_t hammer2_spin_t;
 
-#define hammer2_spin_init(p, s)		rw_init(p)
-#define hammer2_spin_ex(p)		rw_enter(p, RW_WRITER)
-#define hammer2_spin_sh(p)		rw_enter(p, RW_READER)
-#define hammer2_spin_unex(p)		rw_exit(p)
-#define hammer2_spin_unsh(p)		rw_exit(p)
-#define hammer2_spin_destroy(p)		rw_destroy(p)
+static __inline void
+hammer2_spin_init(hammer2_spin_t *p, const char *s)
+{
+	rw_init(p);
+}
 
-#define hammer2_spin_assert_ex(p)	KASSERT(rw_write_held(p))
-#define hammer2_spin_assert_sh(p)	KASSERT(rw_read_held(p))
-#define hammer2_spin_assert_locked(p)	KASSERT(rw_lock_held(p))
-#define hammer2_spin_assert_unlocked(p)	KASSERT(!rw_lock_held(p))
+static __inline void
+hammer2_spin_ex(hammer2_spin_t *p)
+{
+	rw_enter(p, RW_WRITER);
+}
+
+static __inline void
+hammer2_spin_sh(hammer2_spin_t *p)
+{
+	rw_enter(p, RW_READER);
+}
+
+static __inline void
+hammer2_spin_unex(hammer2_spin_t *p)
+{
+	rw_exit(p);
+}
+
+static __inline void
+hammer2_spin_unsh(hammer2_spin_t *p)
+{
+	rw_exit(p);
+}
+
+static __inline void
+hammer2_spin_destroy(hammer2_spin_t *p)
+{
+	rw_destroy(p);
+}
+
+static __inline void
+hammer2_spin_assert_ex(hammer2_spin_t *p)
+{
+	KASSERT(rw_write_held(p));
+}
+
+static __inline void
+hammer2_spin_assert_sh(hammer2_spin_t *p)
+{
+	KASSERT(rw_read_held(p));
+}
+
+static __inline void
+hammer2_spin_assert_locked(hammer2_spin_t *p)
+{
+	KASSERT(rw_lock_held(p));
+}
+
+static __inline void
+hammer2_spin_assert_unlocked(hammer2_spin_t *p)
+{
+	KASSERT(!rw_lock_held(p));
+}
 
 MALLOC_DECLARE(M_HAMMER2);
 MALLOC_DECLARE(M_HAMMER2_RBUF);
