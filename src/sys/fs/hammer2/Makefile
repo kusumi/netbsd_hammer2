@@ -9,8 +9,11 @@ SRCS=	hammer2_admin.c hammer2_bulkfree.c hammer2_chain.c hammer2_cluster.c \
 
 .PATH:	../../libkern
 
-.if defined(HAMMER2_INVARIANTS)
+.if defined(INVARIANTS)
 DBG+=	-DDIAGNOSTIC -DLOCKDEBUG
+.endif
+.if defined(HAMMER2_INVARIANTS)
+CFLAGS+=-DHAMMER2_INVARIANTS
 .endif
 .if defined(HAMMER2_MALLOC)
 DBG+=	-DHAMMER2_MALLOC

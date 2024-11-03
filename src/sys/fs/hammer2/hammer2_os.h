@@ -51,7 +51,7 @@
 
 #include "hammer2_compat.h"
 
-#ifdef INVARIANTS
+#ifdef HAMMER2_INVARIANTS
 #define HFMT	"%s(%s|%d): "
 #define HARGS	__func__, \
     curproc ? curproc->p_comm : "-", \
@@ -64,12 +64,8 @@
 #define hprintf(X, ...)	printf(HFMT X, HARGS, ## __VA_ARGS__)
 #define hpanic(X, ...)	panic(HFMT X, HARGS, ## __VA_ARGS__)
 
-#ifdef INVARIANTS
-#if 0
+#ifdef HAMMER2_INVARIANTS
 #define debug_hprintf	hprintf
-#else
-#define debug_hprintf(X, ...)	do {} while (0)
-#endif
 #else
 #define debug_hprintf(X, ...)	do {} while (0)
 #endif
@@ -162,20 +158,20 @@ static __inline void
 hammer2_mtx_ex(hammer2_mtx_t *p)
 {
 	rw_enter(&p->lock, RW_WRITER);
-	p->refs++;
+	atomic_add_int(&p->refs, 1);
 }
 
 static __inline void
 hammer2_mtx_sh(hammer2_mtx_t *p)
 {
 	rw_enter(&p->lock, RW_READER);
-	p->refs++;
+	atomic_add_int(&p->refs, 1);
 }
 
 static __inline void
 hammer2_mtx_unlock(hammer2_mtx_t *p)
 {
-	p->refs--;
+	atomic_add_int(&p->refs, -1);
 	rw_exit(&p->lock);
 }
 
@@ -226,7 +222,7 @@ static __inline int
 hammer2_mtx_ex_try(hammer2_mtx_t *p)
 {
 	if (rw_tryenter(&p->lock, RW_WRITER)) {
-		p->refs++;
+		atomic_add_int(&p->refs, 1);
 		return (0);
 	} else {
 		return (1);
@@ -237,7 +233,7 @@ static __inline int
 hammer2_mtx_sh_try(hammer2_mtx_t *p)
 {
 	if (rw_tryenter(&p->lock, RW_READER)) {
-		p->refs++;
+		atomic_add_int(&p->refs, 1);
 		return (0);
 	} else {
 		return (1);
