@@ -866,7 +866,6 @@ next_hmp:
 		hmp->vchain.data = (void *)&hmp->voldata;
 		hmp->vchain.bref.type = HAMMER2_BREF_TYPE_VOLUME;
 		hmp->vchain.bref.data_off = 0 | HAMMER2_PBUFRADIX;
-		hmp->vchain.bref.mirror_tid = hmp->voldata.mirror_tid;
 		hammer2_chain_init(&hmp->vchain);
 
 		/*
@@ -884,7 +883,6 @@ next_hmp:
 		hmp->fchain.data = (void *)&hmp->voldata.freemap_blockset;
 		hmp->fchain.bref.type = HAMMER2_BREF_TYPE_FREEMAP;
 		hmp->fchain.bref.data_off = 0 | HAMMER2_PBUFRADIX;
-		hmp->fchain.bref.mirror_tid = hmp->voldata.freemap_tid;
 		hmp->fchain.bref.methods =
 		    HAMMER2_ENC_CHECK(HAMMER2_CHECK_FREEMAP) |
 		    HAMMER2_ENC_COMP(HAMMER2_COMP_NONE);
@@ -1061,7 +1059,7 @@ next_hmp:
 		if (chain->bref.type == HAMMER2_BREF_TYPE_INODE &&
 		    strcmp(label, (char *)chain->data->ipdata.filename) == 0)
 			break;
-		chain = hammer2_chain_next(&parent, chain, &key_next, key_next,
+		chain = hammer2_chain_next(&parent, chain, &key_next,
 		    lhc + HAMMER2_DIRHASH_LOMASK, &error, 0);
 	}
 	if (parent) {
@@ -1195,7 +1193,7 @@ hammer2_update_pmps(hammer2_dev_t *hmp)
 			ripdata = &chain->data->ipdata;
 			hammer2_pfsalloc(chain, ripdata, force_local);
 		}
-		chain = hammer2_chain_next(&parent, chain, &key_next, key_next,
+		chain = hammer2_chain_next(&parent, chain, &key_next,
 		    HAMMER2_KEY_MAX, &error, 0);
 	}
 	if (parent) {
@@ -1683,7 +1681,7 @@ hammer2_fixup_pfses(hammer2_dev_t *hmp)
 			    HAMMER2_FLUSH_TOP | HAMMER2_FLUSH_ALL);
 			hammer2_trans_done(hmp->spmp, 0);
 		}
-		chain = hammer2_chain_next(&parent, chain, &key_next, key_next,
+		chain = hammer2_chain_next(&parent, chain, &key_next,
 		    HAMMER2_KEY_MAX, &error, 0);
 	}
 

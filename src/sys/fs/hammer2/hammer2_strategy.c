@@ -124,6 +124,7 @@ hammer2_decompress_ZLIB_callback(const char *data, unsigned int bytes,
 	int result;
 
 	KKASSERT(bp->b_bufsize <= HAMMER2_PBUFSIZE);
+	bzero(&strm_decompress, sizeof(strm_decompress));
 	strm_decompress.avail_in = 0;
 	strm_decompress.next_in = Z_NULL;
 
@@ -639,6 +640,7 @@ hammer2_compress_and_write(char *data, hammer2_inode_t *ip,
 			else if (comp_level > 9)
 				comp_level = 9;
 			/* XXX NetBSD doesn't have deflateInit. */
+			bzero(&strm_compress, sizeof(strm_compress));
 			ret = deflateInit2(&strm_compress, comp_level,
 			    Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY);
 			if (ret != Z_OK)
