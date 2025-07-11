@@ -39,6 +39,7 @@
 
 #include <sys/syslimits.h>
 #include <sys/dirent.h>
+#include <sys/fcntl.h>
 #include <sys/namei.h>
 #include <sys/uio.h>
 #include <sys/unistd.h>
@@ -245,6 +246,10 @@ hammer2_check_possible(struct vnode *vp, hammer2_inode_t *ip, mode_t mode)
 		}
 	}
 
+	/* If immutable bit set, nobody gets to write it. */
+	if ((mode & VWRITE) && (ip->meta.uflags & SF_IMMUTABLE))
+		return (EPERM);
+
 	return (0);
 }
 
@@ -252,11 +257,11 @@ static int
 hammer2_check_permitted(struct vnode *vp, hammer2_inode_t *ip, accmode_t accmode,
     kauth_cred_t cred)
 {
-	return kauth_authorize_vnode(cred, KAUTH_ACCESS_ACTION(accmode,
+	return (kauth_authorize_vnode(cred, KAUTH_ACCESS_ACTION(accmode,
 	    vp->v_type, ip->meta.mode & ALLPERMS), vp, NULL,
 	    genfs_can_access(vp, cred, hammer2_to_unix_xid(&ip->meta.uid),
 	    hammer2_to_unix_xid(&ip->meta.gid), ip->meta.mode & ALLPERMS,
-	    NULL, accmode));
+	    NULL, accmode)));
 }
 
 static int
@@ -275,9 +280,7 @@ hammer2_access(void *v)
 	if (error)
 		return (error);
 
-	error = hammer2_check_permitted(vp, ip, ap->a_accmode, ap->a_cred);
-
-	return (error);
+	return (hammer2_check_permitted(vp, ip, ap->a_accmode, ap->a_cred));
 }
 
 static int
@@ -295,7 +298,7 @@ hammer2_getattr(void *v)
 
 	vap->va_fsid = pmp->mp->mnt_stat.f_fsid;
 	vap->va_fileid = ip->meta.inum;
-	vap->va_mode = ip->meta.mode;
+	vap->va_mode = ip->meta.mode & ~S_IFMT;
 	vap->va_nlink = ip->meta.nlinks;
 	vap->va_uid = hammer2_to_unix_xid(&ip->meta.uid);
 	vap->va_gid = hammer2_to_unix_xid(&ip->meta.gid);
@@ -304,8 +307,12 @@ hammer2_getattr(void *v)
 	vap->va_flags = ip->meta.uflags;
 	hammer2_time_to_timespec(ip->meta.ctime, &vap->va_ctime);
 	hammer2_time_to_timespec(ip->meta.mtime, &vap->va_mtime);
-	hammer2_time_to_timespec(ip->meta.mtime, &vap->va_atime);
-	//bzero(&vap->va_birthtime, sizeof(vap->va_birthtime));
+#ifdef HAMMER2_ATIME
+	hammer2_time_to_timespec(ip->meta.atime, &vap->va_atime);
+#else
+	hammer2_time_to_timespec(ip->meta.mtime, &vap->va_atime); /* return mtime */
+#endif
+	hammer2_time_to_timespec(ip->meta.btime, &vap->va_birthtime);
 	vap->va_gen = 1;
 	vap->va_blocksize = vp->v_mount->mnt_stat.f_iosize;
 	if (ip->meta.type == HAMMER2_OBJTYPE_DIRECTORY) {
@@ -324,6 +331,91 @@ hammer2_getattr(void *v)
 }
 
 static int
+hammer2_chown(struct vnode *vp, uid_t uid, gid_t gid, kauth_cred_t cred)
+{
+	hammer2_inode_t *ip = VTOI(vp);
+	struct uuid uuid_uid, uuid_gid;
+	uid_t ouid, ogid;
+	uint64_t ctime;
+	uint32_t imode;
+	int error;
+
+	hammer2_mtx_assert_ex(&ip->lock);
+
+	ouid = hammer2_to_unix_xid(&ip->meta.uid);
+	ogid = hammer2_to_unix_xid(&ip->meta.gid);
+
+	if (uid == (uid_t)VNOVAL)
+		uid = ouid;
+	if (gid == (gid_t)VNOVAL)
+		gid = ogid;
+
+	error = kauth_authorize_vnode(cred, KAUTH_VNODE_CHANGE_OWNERSHIP,
+	    vp, NULL, genfs_can_chown(vp, cred, uid, gid, uid, gid));
+	if (error)
+		return (error);
+
+	imode = ip->meta.mode;
+	if (ouid != uid && (imode & S_ISUID) &&
+	    kauth_authorize_vnode(cred, KAUTH_VNODE_RETAIN_SUID, vp, NULL,
+	    EPERM))
+		imode &= ~S_ISUID;
+	if (ogid != gid && (imode & S_ISGID) &&
+	    kauth_authorize_vnode(cred, KAUTH_VNODE_RETAIN_SGID, vp, NULL,
+	    EPERM))
+		imode &= ~S_ISGID;
+
+	hammer2_guid_to_uuid(&uuid_uid, uid);
+	hammer2_guid_to_uuid(&uuid_gid, gid);
+	if (bcmp(&uuid_uid, &ip->meta.uid, sizeof(uuid_uid)) ||
+	    bcmp(&uuid_gid, &ip->meta.gid, sizeof(uuid_gid)) ||
+	    ip->meta.mode != imode) {
+		hammer2_update_time(&ctime);
+		hammer2_inode_modify(ip);
+		hammer2_spin_ex(&ip->cluster_spin);
+		ip->meta.uid = uuid_uid;
+		ip->meta.gid = uuid_gid;
+		ip->meta.mode = imode;
+		ip->meta.ctime = ctime;
+		hammer2_spin_unex(&ip->cluster_spin);
+	}
+
+	return (0);
+}
+
+static int
+hammer2_chmod(struct vnode *vp, mode_t mode, kauth_cred_t cred)
+{
+	hammer2_inode_t *ip = VTOI(vp);
+	uint64_t ctime;
+	uint32_t imode;
+	int error;
+
+	hammer2_mtx_assert_ex(&ip->lock);
+
+	error = kauth_authorize_vnode(cred, KAUTH_VNODE_WRITE_SECURITY,
+	    vp, NULL, genfs_can_chmod(vp, cred,
+	    hammer2_to_unix_xid(&ip->meta.uid),
+	    hammer2_to_unix_xid(&ip->meta.gid), mode));
+	if (error)
+		return (error);
+
+	imode = ip->meta.mode;
+	imode &= ~ALLPERMS;
+	imode |= (mode & ALLPERMS);
+	if (ip->meta.mode != imode) {
+		hammer2_update_time(&ctime);
+		hammer2_inode_modify(ip);
+		hammer2_spin_ex(&ip->cluster_spin);
+		ip->meta.mode = imode;
+		ip->meta.ctime = ctime;
+		hammer2_spin_unex(&ip->cluster_spin);
+	}
+
+	return (0);
+}
+
+static int
 hammer2_setattr(void *v)
 {
 	struct vop_setattr_args /* {
@@ -334,17 +426,10 @@ hammer2_setattr(void *v)
 	struct vnode *vp = ap->a_vp;
 	struct vattr *vap = ap->a_vap;
 	kauth_cred_t cred = ap->a_cred;
-	struct uuid uuid_uid, uuid_gid;
 	hammer2_inode_t *ip = VTOI(vp);
-	mode_t mode;
-	gid_t uid, gid;
 	uint64_t ctime;
 	int error = 0;
 
-	hammer2_update_time(&ctime);
-
-	if (ip->pmp->rdonly)
-		return (EROFS);
 	/*
 	 * Normally disallow setattr if there is no space, unless we
 	 * are in emergency mode (might be needed to chflags -R noschg
@@ -354,6 +439,7 @@ hammer2_setattr(void *v)
 	    hammer2_vfs_enospace(ip, 0, cred) > 1)
 		return (ENOSPC);
 
+	/* Check for unsettable attributes. */
 	if (vap->va_type != VNON ||
 	    vap->va_nlink != (nlink_t)VNOVAL ||
 	    vap->va_fsid != (dev_t)VNOVAL ||
@@ -367,21 +453,23 @@ hammer2_setattr(void *v)
 	hammer2_trans_init(ip->pmp, 0);
 	hammer2_inode_lock(ip, 0);
 
-	mode = ip->meta.mode;
-	uid = hammer2_to_unix_xid(&ip->meta.uid);
-	gid = hammer2_to_unix_xid(&ip->meta.gid);
-
 	if (vap->va_flags != (u_long)VNOVAL) {
-		if (vap->va_flags & ~(SF_APPEND | SF_IMMUTABLE | UF_NODUMP)) {
+		if (vap->va_flags & ~(SF_APPEND | SF_IMMUTABLE |
+		    UF_APPEND | UF_IMMUTABLE | UF_NODUMP)) {
 			error = EOPNOTSUPP;
 			goto done;
 		}
+		if (ip->pmp->rdonly) {
+			error = EROFS;
+			goto done;
+		}
 		error = kauth_authorize_vnode(cred, KAUTH_VNODE_WRITE_FLAGS, vp,
-		    NULL, genfs_can_chflags(vp, cred, uid, false));
+		    NULL, genfs_can_chflags(vp, cred,
+		    hammer2_to_unix_xid(&ip->meta.uid), false));
 		if (error)
 			goto done;
-
 		if (ip->meta.uflags != vap->va_flags) {
+			hammer2_update_time(&ctime);
 			hammer2_inode_modify(ip);
 			hammer2_spin_ex(&ip->cluster_spin);
 			ip->meta.uflags = vap->va_flags;
@@ -396,44 +484,33 @@ hammer2_setattr(void *v)
 		goto done;
 	}
 
+	/* Go through the fields and update iff not VNOVAL. */
 	if (vap->va_uid != (uid_t)VNOVAL || vap->va_gid != (gid_t)VNOVAL) {
-		if (vap->va_uid == (uid_t)VNOVAL)
-			vap->va_uid = uid;
-		if (vap->va_gid == (gid_t)VNOVAL)
-			vap->va_gid = gid;
-		error = kauth_authorize_vnode(cred, KAUTH_VNODE_CHANGE_OWNERSHIP,
-		    vp, NULL, genfs_can_chown(vp, cred, uid, gid, vap->va_uid,
-		    vap->va_gid));
+		if (ip->pmp->rdonly) {
+			error = EROFS;
+			goto done;
+		}
+		error = hammer2_chown(vp, vap->va_uid, vap->va_gid, cred);
 		if (error)
 			goto done;
-		if (uid != vap->va_uid && (mode & S_ISUID) &&
-		    kauth_authorize_vnode(cred, KAUTH_VNODE_RETAIN_SUID, vp,
-		    NULL, EPERM) != 0)
-			mode &= ~S_ISUID;
-		if (gid != vap->va_gid && (mode & S_ISGID) &&
-		    kauth_authorize_vnode(cred, KAUTH_VNODE_RETAIN_SGID, vp,
-		    NULL, EPERM) != 0)
-			mode &= ~S_ISGID;
-
-		hammer2_guid_to_uuid(&uuid_uid, vap->va_uid);
-		hammer2_guid_to_uuid(&uuid_gid, vap->va_gid);
-		if (bcmp(&uuid_uid, &ip->meta.uid, sizeof(uuid_uid)) ||
-		    bcmp(&uuid_gid, &ip->meta.gid, sizeof(uuid_gid)) ||
-		    ip->meta.mode != mode) {
-			hammer2_inode_modify(ip);
-			hammer2_spin_ex(&ip->cluster_spin);
-			ip->meta.uid = uuid_uid;
-			ip->meta.gid = uuid_gid;
-			ip->meta.mode = mode;
-			ip->meta.ctime = ctime;
-			hammer2_spin_unex(&ip->cluster_spin);
-		}
 	}
 
 	if (vap->va_size != (u_quad_t)VNOVAL && ip->meta.size != vap->va_size) {
+		/*
+		 * Disallow write attempts on read-only file systems;
+		 * unless the file is a socket, fifo, or a block or
+		 * character device resident on the file system.
+		 */
 		switch (vp->v_type) {
+		case VDIR:
+			error = EISDIR;
+			goto done;
 		case VLNK:
 		case VREG:
+			if (ip->pmp->rdonly) {
+				error = EROFS;
+				goto done;
+			}
 			if (vap->va_size == ip->meta.size)
 				break;
 			if (vap->va_size < ip->meta.size) {
@@ -443,55 +520,51 @@ hammer2_setattr(void *v)
 			} else {
 				hammer2_extend_file(ip, vap->va_size);
 			}
+			hammer2_update_time(&ctime);
 			hammer2_inode_modify(ip);
+			ip->meta.ctime = ctime;
 			ip->meta.mtime = ctime;
 			break;
-		case VDIR:
-			error = EISDIR;
-			goto done;
 		default:
-			/*
-			 * According to POSIX, the result is unspecified
-			 * for file types other than regular files,
-			 * directories and shared memory objects.  We
-			 * don't support shared memory objects in the file
-			 * system, and have dubious support for truncating
-			 * symlinks.  Just ignore the request in other cases.
-			 *
-			 * Note that DragonFly HAMMER2 returns EINVAL for
-			 * anything but VREG.
-			 */
-			break;
+			error = EINVAL;
+			goto done;
 		}
+	}
+
+	if (vap->va_atime.tv_sec != (time_t)VNOVAL ||
+	    vap->va_mtime.tv_sec != (time_t)VNOVAL ||
+	    vap->va_birthtime.tv_sec != (time_t)VNOVAL) {
+		if (ip->pmp->rdonly) {
+			error = EROFS;
+			goto done;
+		}
+		error = kauth_authorize_vnode(cred, KAUTH_VNODE_WRITE_TIMES, vp,
+		    NULL, genfs_can_chtimes(vp, cred,
+		    hammer2_to_unix_xid(&ip->meta.uid), vap->va_vaflags));
+		if (error)
+			goto done;
+		hammer2_inode_modify(ip);
+		if (vap->va_atime.tv_sec != (time_t)VNOVAL)
+			ip->meta.atime =
+			    hammer2_timespec_to_time(&vap->va_atime);
+		if (vap->va_mtime.tv_sec != (time_t)VNOVAL)
+			ip->meta.mtime =
+			    hammer2_timespec_to_time(&vap->va_mtime);
+		if (vap->va_birthtime.tv_sec != (time_t)VNOVAL)
+			ip->meta.btime =
+			    hammer2_timespec_to_time(&vap->va_birthtime);
 	}
 
 	if (vap->va_mode != (mode_t)VNOVAL) {
-		error = kauth_authorize_vnode(cred, KAUTH_VNODE_WRITE_SECURITY,
-		    vp, NULL, genfs_can_chmod(vp, cred, uid, gid, mode));
-		if (error)
+		if (ip->pmp->rdonly) {
+			error = EROFS;
 			goto done;
-
-		mode &= ~ALLPERMS;
-		mode |= vap->va_mode & ALLPERMS;
-		if (ip->meta.mode != mode) {
-			hammer2_inode_modify(ip);
-			hammer2_spin_ex(&ip->cluster_spin);
-			ip->meta.mode = mode;
-			ip->meta.ctime = ctime;
-			hammer2_spin_unex(&ip->cluster_spin);
 		}
-	}
-
-	/* DragonFly HAMMER2 doesn't support atime either. */
-	if (vap->va_mtime.tv_sec != (time_t)VNOVAL) {
-		error = kauth_authorize_vnode(cred, KAUTH_VNODE_WRITE_TIMES, vp,
-		    NULL, genfs_can_chtimes(vp, cred, uid, vap->va_vaflags));
+		error = hammer2_chmod(vp, vap->va_mode, cred);
 		if (error)
 			goto done;
-
-		hammer2_inode_modify(ip);
-		ip->meta.mtime = hammer2_timespec_to_time(&vap->va_mtime);
 	}
+	KKASSERT(error == 0);
 done:
 	/*
 	 * If a truncation occurred we must call chain_sync() now in order
@@ -757,6 +830,7 @@ hammer2_read_file(hammer2_inode_t *ip, struct uio *uio, int ioflag)
 		}
 		brelse(bp, 0);
 	}
+	/* XXX atime not updated */
 	hammer2_mtx_unlock(&ip->truncate_lock);
 
 	return (error);
@@ -806,13 +880,16 @@ hammer2_read(void *v)
  * The inode must not be locked.
  */
 static int
-hammer2_write_file(hammer2_inode_t *ip, struct uio *uio, int ioflag)
+hammer2_write_file(hammer2_inode_t *ip, struct uio *uio, int ioflag,
+    kauth_cred_t cred)
 {
 	struct vnode *vp = ip->vp;
 	struct buf *bp;
 	hammer2_key_t old_eof, new_eof, lbase;
 	daddr_t lbn;
 	size_t n;
+	size_t resid = uio->uio_resid;
+	uint64_t mtime;
 	int lblksize, loff, trivial, endofblk;
 	int modified = 0, error = 0;
 	int async = vp->v_mount->mnt_flag & MNT_ASYNC;
@@ -831,6 +908,12 @@ hammer2_write_file(hammer2_inode_t *ip, struct uio *uio, int ioflag)
 	hammer2_mtx_sh(&ip->truncate_lock);
 	if (ioflag & IO_APPEND)
 		uio->uio_offset = ip->meta.size;
+	if ((ip->meta.uflags & APPEND) &&
+	    uio->uio_offset != (off_t)ip->meta.size) {
+		hammer2_mtx_unlock(&ip->truncate_lock);
+		hammer2_mtx_unlock(&ip->lock);
+		return (EPERM);
+	}
 	old_eof = ip->meta.size;
 
 	/*
@@ -951,13 +1034,45 @@ hammer2_write_file(hammer2_inode_t *ip, struct uio *uio, int ioflag)
 		hammer2_mtx_ex(&ip->lock); /* note lock order */
 		hammer2_mtx_ex(&ip->truncate_lock); /* note lock order */
 		hammer2_truncate_file(ip, old_eof);
-		if (ip->flags & HAMMER2_INODE_MODIFIED)
+		if (ip->flags & HAMMER2_INODE_MODIFIED) {
+			/*
+			 * If we successfully wrote any data and we are not the superuser,
+			 * we clear the setuid and setgid bits as a precaution against
+			 * tampering.
+			 */
+			if (resid > uio->uio_resid && cred) {
+				if (ip->meta.mode & S_ISUID)
+					if (kauth_authorize_vnode(cred,
+					    KAUTH_VNODE_RETAIN_SUID, vp, NULL, EPERM))
+						ip->meta.mode &= ~S_ISUID;
+				if (ip->meta.mode & S_ISGID)
+					if (kauth_authorize_vnode(cred,
+					    KAUTH_VNODE_RETAIN_SGID, vp, NULL, EPERM))
+						ip->meta.mode &= ~S_ISGID;
+			}
 			hammer2_inode_chain_sync(ip);
+		}
 		hammer2_mtx_unlock(&ip->lock);
 	} else if (modified) {
+		hammer2_update_time(&mtime);
 		hammer2_mtx_ex(&ip->lock);
 		hammer2_inode_modify(ip);
-		hammer2_update_time(&ip->meta.mtime);
+		/*
+		 * If we successfully wrote any data and we are not the superuser,
+		 * we clear the setuid and setgid bits as a precaution against
+		 * tampering.
+		 */
+		if (resid > uio->uio_resid && cred) {
+			if (ip->meta.mode & S_ISUID)
+				if (kauth_authorize_vnode(cred,
+				    KAUTH_VNODE_RETAIN_SUID, vp, NULL, EPERM))
+					ip->meta.mode &= ~S_ISUID;
+			if (ip->meta.mode & S_ISGID)
+				if (kauth_authorize_vnode(cred,
+				    KAUTH_VNODE_RETAIN_SGID, vp, NULL, EPERM))
+					ip->meta.mode &= ~S_ISGID;
+		}
+		ip->meta.mtime = mtime;
 		hammer2_mtx_unlock(&ip->lock);
 	}
 	hammer2_trans_assert_strategy(ip->pmp);
@@ -987,6 +1102,7 @@ hammer2_write(void *v)
 
 	if (ip->pmp->rdonly || (ip->pmp->flags & HAMMER2_PMPF_EMERG))
 		return (EROFS);
+
 	switch (hammer2_vfs_enospace(ip, uio->uio_resid, ap->a_cred)) {
 	case 2:
 		return (ENOSPC);
@@ -1009,7 +1125,7 @@ hammer2_write(void *v)
 		hammer2_trans_init(ip->pmp, HAMMER2_TRANS_BUFCACHE);
 	else
 		hammer2_trans_init(ip->pmp, 0);
-	error = hammer2_write_file(ip, uio, ioflag);
+	error = hammer2_write_file(ip, uio, ioflag, ap->a_cred);
 	if (0)
 		hammer2_trans_done(ip->pmp,
 		    HAMMER2_TRANS_BUFCACHE | HAMMER2_TRANS_SIDEQ);
@@ -1291,6 +1407,21 @@ hammer2_nresolve(void *v)
 					hammer2_inode_unlock(ip);
 					goto out;
 				}
+				/*
+				 * If directory is "sticky", then user must own
+				 * the directory, or the file in it, else she
+				 * may not delete it (unless she's root). This
+				 * implements append-only directories.
+				 */
+				if (kauth_authorize_vnode(cred, KAUTH_VNODE_DELETE,
+				    vp, dvp, genfs_can_sticky(dvp, cred,
+				    hammer2_to_unix_xid(&dip->meta.uid),
+				    hammer2_to_unix_xid(&ip->meta.uid)))) {
+					error = EPERM;
+					vput(vp);
+					hammer2_inode_unlock(ip);
+					goto out;
+				}
 				*ap->a_vpp = vp;
 			} else if (nameiop == RENAME &&
 			    (cnp->cn_flags & ISLASTCN)) {
@@ -1347,6 +1478,7 @@ hammer2_mknod(void *v)
 
 	if (dip->pmp->rdonly || (dip->pmp->flags & HAMMER2_PMPF_EMERG))
 		return (EROFS);
+
 	if (hammer2_vfs_enospace(dip, 0, cnp->cn_cred) > 1)
 		return (ENOSPC);
 
@@ -1399,6 +1531,7 @@ hammer2_mknod(void *v)
 		hammer2_update_time(&mtime);
 		hammer2_inode_modify(dip);
 		dip->meta.mtime = mtime;
+		dip->meta.ctime = mtime;
 		/*hammer2_inode_unlock(dip);*/
 	}
 	hammer2_inode_unlock(dip);
@@ -1434,6 +1567,7 @@ hammer2_mkdir(void *v)
 
 	if (dip->pmp->rdonly || (dip->pmp->flags & HAMMER2_PMPF_EMERG))
 		return (EROFS);
+
 	if (hammer2_vfs_enospace(dip, 0, cnp->cn_cred) > 1)
 		return (ENOSPC);
 
@@ -1486,6 +1620,9 @@ hammer2_mkdir(void *v)
 		hammer2_update_time(&mtime);
 		hammer2_inode_modify(dip);
 		dip->meta.mtime = mtime;
+		dip->meta.ctime = mtime;
+		if (dip->meta.nlinks != 1)
+			++dip->meta.nlinks;
 		/*hammer2_inode_unlock(dip);*/
 	}
 	hammer2_inode_unlock(dip);
@@ -1521,6 +1658,7 @@ hammer2_create(void *v)
 
 	if (dip->pmp->rdonly || (dip->pmp->flags & HAMMER2_PMPF_EMERG))
 		return (EROFS);
+
 	if (hammer2_vfs_enospace(dip, 0, cnp->cn_cred) > 1)
 		return (ENOSPC);
 
@@ -1573,6 +1711,7 @@ hammer2_create(void *v)
 		hammer2_update_time(&mtime);
 		hammer2_inode_modify(dip);
 		dip->meta.mtime = mtime;
+		dip->meta.ctime = mtime;
 		/*hammer2_inode_unlock(dip);*/
 	}
 	hammer2_inode_unlock(dip);
@@ -1600,7 +1739,8 @@ hammer2_rmdir(void *v)
 	struct componentname *cnp = ap->a_cnp;
 	struct vnode *dvp = ap->a_dvp;
 	struct vnode *vp = ap->a_vp;
-	hammer2_inode_t *dip = VTOI(dvp), *ip;
+	hammer2_inode_t *dip = VTOI(dvp);
+	hammer2_inode_t *ip = VTOI(vp);
 	hammer2_xop_unlink_t *xop;
 	uint64_t mtime;
 	int error;
@@ -1610,6 +1750,10 @@ hammer2_rmdir(void *v)
 		vrele(vp);
 		return (EINVAL);
 	}
+
+	if ((dip->meta.uflags & APPEND) ||
+	    (ip->meta.uflags & (IMMUTABLE | APPEND)))
+		return (EPERM);
 
 	if (dip->pmp->rdonly) {
 		vrele(vp);
@@ -1630,11 +1774,6 @@ hammer2_rmdir(void *v)
 	xop->isdir = 1;
 	xop->dopermanent = 0;
 	hammer2_xop_start(&xop->head, &hammer2_unlink_desc);
-	/*
-	 * Collect the real inode and adjust nlinks, destroy the real
-	 * inode if nlinks transitions to 0 and it was the real inode
-	 * (else it has already been removed).
-	 */
 	error = hammer2_xop_collect(&xop->head, 0);
 	error = hammer2_error_to_errno(error);
 	if (error == 0) {
@@ -1664,6 +1803,9 @@ hammer2_rmdir(void *v)
 		hammer2_update_time(&mtime);
 		hammer2_inode_modify(dip);
 		dip->meta.mtime = mtime;
+		dip->meta.ctime = mtime;
+		if (dip->meta.nlinks != 1)
+			--dip->meta.nlinks;
 		/*hammer2_inode_unlock(dip);*/
 	}
 	hammer2_inode_unlock(dip);
@@ -1690,10 +1832,15 @@ hammer2_remove(void *v)
 	struct componentname *cnp = ap->a_cnp;
 	struct vnode *dvp = ap->a_dvp;
 	struct vnode *vp = ap->a_vp;
-	hammer2_inode_t *dip = VTOI(dvp), *ip;
+	hammer2_inode_t *dip = VTOI(dvp);
+	hammer2_inode_t *ip = VTOI(vp);
 	hammer2_xop_unlink_t *xop;
 	uint64_t mtime;
 	int error;
+
+	if ((ip->meta.uflags & (IMMUTABLE | APPEND)) ||
+	    (dip->meta.uflags & APPEND))
+		return (EPERM);
 
 	if (dip->pmp->rdonly) {
 		vrele(vp);
@@ -1714,11 +1861,6 @@ hammer2_remove(void *v)
 	xop->isdir = 0;
 	xop->dopermanent = 0;
 	hammer2_xop_start(&xop->head, &hammer2_unlink_desc);
-	/*
-	 * Collect the real inode and adjust nlinks, destroy the real
-	 * inode if nlinks transitions to 0 and it was the real inode
-	 * (else it has already been removed).
-	 */
 	error = hammer2_xop_collect(&xop->head, 0);
 	error = hammer2_error_to_errno(error);
 	if (error == 0) {
@@ -1748,6 +1890,7 @@ hammer2_remove(void *v)
 		hammer2_update_time(&mtime);
 		hammer2_inode_modify(dip);
 		dip->meta.mtime = mtime;
+		dip->meta.ctime = mtime;
 		/*hammer2_inode_unlock(dip);*/
 	}
 	hammer2_inode_unlock(dip);
@@ -1803,9 +1946,10 @@ hammer2_rename(void *v)
 		error = EXDEV;
 		goto abortit;
 	}
-	/* If source and dest are the same, do nothing. */
-	if (tvp == fvp) {
-		error = 0;
+
+	if (tvp && ((VTOI(tvp)->meta.uflags & (IMMUTABLE | APPEND)) ||
+	    (tdip->meta.uflags & APPEND))) {
+		error = EPERM;
 		goto abortit;
 	}
 
@@ -1813,14 +1957,30 @@ hammer2_rename(void *v)
 		error = EROFS;
 		goto abortit;
 	}
+
 	if (hammer2_vfs_enospace(fdip, 0, fcnp->cn_cred) > 1) {
 		error = ENOSPC;
+		goto abortit;
+	}
+
+	/*
+	 * Renaming a file to itself has no effect.  The upper layers should
+	 * not call us in that case.
+	 */
+	if (tvp == fvp) {
+		error = 0;
 		goto abortit;
 	}
 
 	error = vn_lock(fvp, LK_EXCLUSIVE);
 	if (error)
 		goto abortit;
+	if ((fip->meta.uflags & (IMMUTABLE | APPEND)) ||
+	    (fdip->meta.uflags & APPEND)) {
+		VOP_UNLOCK(fvp);
+		error = EPERM;
+		goto abortit;
+	}
 	if (fdvp != tdvp) {
 		error = vn_lock(fdvp, LK_EXCLUSIVE);
 		if (error) {
@@ -1828,6 +1988,18 @@ hammer2_rename(void *v)
 			goto abortit;
 		}
 	}
+
+	/*
+	 * If ".." must be changed (ie the directory gets a new
+	 * parent) then the source directory must not be in the
+	 * directory hierarchy above the target, as this would
+	 * orphan everything below the source directory. Also
+	 * the user must have write permission in the source so
+	 * as to be able to change "..". We must repeat the call
+	 * to namei, as the parent directory is unlocked by the
+	 * call to checkpath().
+	 */
+	/* XXX DragonFly does this in VFS. */
 
 	hammer2_trans_init(tdip->pmp, 0);
 	hammer2_inode_ref(fip); /* extra ref */
@@ -1950,10 +2122,16 @@ done2:
 		if (update_fdip) {
 			hammer2_inode_modify(fdip);
 			fdip->meta.mtime = mtime;
+			if (fip->meta.type == HAMMER2_OBJTYPE_DIRECTORY &&
+			    fdip->meta.nlinks != 1)
+				--fdip->meta.nlinks;
 		}
 		if (update_tdip) {
 			hammer2_inode_modify(tdip);
 			tdip->meta.mtime = mtime;
+			if (fip->meta.type == HAMMER2_OBJTYPE_DIRECTORY &&
+			    tdip->meta.nlinks != 1)
+				++tdip->meta.nlinks;
 		}
 	}
 	if (tip) {
@@ -2020,8 +2198,12 @@ hammer2_link(void *v)
 	if (dvp->v_mount != vp->v_mount)
 		return (EXDEV);
 
+	if (ip->meta.uflags & (IMMUTABLE | APPEND))
+		return (EPERM);
+
 	if (tdip->pmp->rdonly || (tdip->pmp->flags & HAMMER2_PMPF_EMERG))
 		return (EROFS);
+
 	if (hammer2_vfs_enospace(tdip, 0, cnp->cn_cred) > 1)
 		return (ENOSPC);
 
@@ -2094,6 +2276,7 @@ hammer2_symlink(void *v)
 
 	if (dip->pmp->rdonly || (dip->pmp->flags & HAMMER2_PMPF_EMERG))
 		return (EROFS);
+
 	if (hammer2_vfs_enospace(dip, 0, cnp->cn_cred) > 1)
 		return (ENOSPC);
 
@@ -2153,7 +2336,7 @@ hammer2_symlink(void *v)
 		aiov.iov_base = __DECONST(void *, ap->a_target);
 		aiov.iov_len = strlen(ap->a_target);
 		UIO_SETUP_SYSSPACE(&auio);
-		error = hammer2_write_file(nip, &auio, IO_APPEND);
+		error = hammer2_write_file(nip, &auio, IO_APPEND, NULL);
 	}
 
 	/*
@@ -2166,6 +2349,7 @@ hammer2_symlink(void *v)
 		hammer2_update_time(&mtime);
 		hammer2_inode_modify(dip);
 		dip->meta.mtime = mtime;
+		dip->meta.ctime = mtime;
 		/*hammer2_inode_unlock(dip);*/
 	}
 	hammer2_inode_unlock(dip);
@@ -2190,7 +2374,13 @@ hammer2_open(void *v)
 		int a_mode;
 		kauth_cred_t a_cred;
 	} */ *ap = v;
-	struct vnode *vp __diagused = ap->a_vp;
+	struct vnode *vp = ap->a_vp;
+	hammer2_inode_t *ip = VTOI(vp);
+
+	/* Files marked append-only must be opened for appending. */
+	if ((ip->meta.uflags & APPEND) &&
+	    (ap->a_mode & (FWRITE | O_APPEND)) == FWRITE)
+		return (EPERM);
 
 	KASSERT(VOP_ISLOCKED(vp));
 	return (0);
@@ -2278,7 +2468,7 @@ hammer2_pathconf(void *v)
 		*ap->a_retval = INT_MAX;
 		break;
 	case _PC_NAME_MAX:
-		*ap->a_retval = HAMMER2_INODE_MAXNAME;
+		*ap->a_retval = NAME_MAX; /* < HAMMER2_INODE_MAXNAME */
 		break;
 	case _PC_PATH_MAX:
 		*ap->a_retval = PATH_MAX;
@@ -2293,7 +2483,7 @@ hammer2_pathconf(void *v)
 		*ap->a_retval = 1;
 		break;
 	case _PC_NO_TRUNC:
-		*ap->a_retval = 0;
+		*ap->a_retval = 1;
 		break;
 	case _PC_MIN_HOLE_SIZE:
 		*ap->a_retval = vp->v_mount->mnt_stat.f_iosize;
@@ -2305,7 +2495,7 @@ hammer2_pathconf(void *v)
 		*ap->a_retval = 64;
 		break;
 	case _PC_SYMLINK_MAX:
-		*ap->a_retval = HAMMER2_INODE_MAXNAME;
+		*ap->a_retval = MAXPATHLEN;
 		break;
 	default:
 		error = genfs_pathconf(ap);

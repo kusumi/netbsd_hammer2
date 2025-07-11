@@ -13,10 +13,13 @@ SRCS=	hammer2_admin.c hammer2_bulkfree.c hammer2_chain.c hammer2_cluster.c \
 DBG+=	-DDIAGNOSTIC -DLOCKDEBUG
 .endif
 .if defined(HAMMER2_INVARIANTS)
-CFLAGS+=-DHAMMER2_INVARIANTS
+DBG+=	-DHAMMER2_INVARIANTS
 .endif
 .if defined(HAMMER2_MALLOC)
 DBG+=	-DHAMMER2_MALLOC
+.endif
+.if defined(HAMMER2_ATIME)
+DBG+=	-DHAMMER2_ATIME
 .endif
 .if defined(HAMMER2_WRITE)
 DBG+=	-DHAMMER2_WRITE

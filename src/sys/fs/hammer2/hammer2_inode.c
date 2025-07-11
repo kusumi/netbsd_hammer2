@@ -37,6 +37,8 @@
 
 #include "hammer2.h"
 
+#include <miscfs/genfs/genfs.h>
+
 static void hammer2_inode_repoint(hammer2_inode_t *, hammer2_cluster_t *);
 static void hammer2_inode_repoint_one(hammer2_inode_t *, hammer2_cluster_t *,
     int);
@@ -867,6 +869,8 @@ hammer2_inode_create_pfs(hammer2_pfs_t *spmp, const char *name, size_t name_len,
 	xop->meta.version = HAMMER2_INODE_VERSION_ONE;
 	hammer2_update_time(&xop->meta.ctime);
 	xop->meta.mtime = xop->meta.ctime;
+	xop->meta.atime = xop->meta.ctime;
+	xop->meta.btime = xop->meta.ctime;
 	xop->meta.mode = 0755;
 	xop->meta.nlinks = 1;
 	hammer2_xop_setname(&xop->head, name, name_len);
@@ -958,9 +962,20 @@ hammer2_inode_create_normal(hammer2_inode_t *pip, struct vattr *vap,
 	nip->meta.version = HAMMER2_INODE_VERSION_ONE;
 	hammer2_update_time(&nip->meta.ctime);
 	nip->meta.mtime = nip->meta.ctime;
+	nip->meta.atime = nip->meta.ctime;
+	nip->meta.btime = nip->meta.ctime;
 	nip->meta.mode = vap->va_mode;
-	nip->meta.nlinks = 1;
-
+	nip->meta.nlinks = nip->meta.type == HAMMER2_OBJTYPE_DIRECTORY ? 2 : 1;
+#if 0
+	/* Authorize setting SGID if needed. */
+	if (nip->meta.mode & S_ISGID) {
+		if (kauth_authorize_vnode(cred, KAUTH_VNODE_WRITE_SECURITY,
+		    nip->vp, NULL, genfs_can_chmod(nip->vp, cred,
+		    hammer2_to_unix_xid(&nip->meta.uid),
+		    hammer2_to_unix_xid(&nip->meta.gid), vap->va_mode)))
+			nip->meta.mode &= ~S_ISGID;
+	}
+#endif
 	/* if (vap->va_vaflags & VA_UID_UUID_VALID)
 		nip->meta.uid = vap->va_uid_uuid;
 	else */
@@ -1281,26 +1296,24 @@ hammer2_inode_inode_count(const hammer2_inode_t *ip)
 /*
  * Called with a locked inode to finish unlinking an inode after xop_unlink
  * had been run.  This function is responsible for decrementing nlinks.
- *
- * We don't bother decrementing nlinks if the file is not open and this was
- * the last link.
- *
- * If the inode is a hardlink target it's chain has not yet been deleted,
- * otherwise it's chain has been deleted.
- *
- * If isopen then any prior deletion was not permanent and the inode is
- * left intact with nlinks == 0.
  */
 int
 hammer2_inode_unlink_finisher(hammer2_inode_t *ip, struct vnode **vprecyclep)
 {
 	struct vnode *vp;
+	uint64_t ctime;
+	int has_links;
+
+	has_links = ip->meta.type != HAMMER2_OBJTYPE_DIRECTORY &&
+	    (int64_t)ip->meta.nlinks > 1;
 
 	/*
 	 * Decrement nlinks.  Catch a bad nlinks count here too (e.g. 0 or
 	 * negative), and just assume a transition to 0.
 	 */
-	if ((int64_t)ip->meta.nlinks <= 1) {
+	if (has_links) {
+		hammer2_update_time(&ctime);
+	} else {
 		atomic_set_int(&ip->flags, HAMMER2_INODE_ISUNLINKED);
 
 		/*
@@ -1339,10 +1352,12 @@ hammer2_inode_unlink_finisher(hammer2_inode_t *ip, struct vnode **vprecyclep)
 
 	/* Adjust nlinks and retain the inode on the media for now. */
 	hammer2_inode_modify(ip);
-	if ((int64_t)ip->meta.nlinks > 1)
+	if (has_links) {
 		--ip->meta.nlinks;
-	else
+		ip->meta.ctime = ctime;
+	} else {
 		ip->meta.nlinks = 0;
+	}
 
 	return (0);
 }
