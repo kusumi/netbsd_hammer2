@@ -259,8 +259,8 @@ hammer2_check_permitted(struct vnode *vp, hammer2_inode_t *ip, accmode_t accmode
 {
 	return (kauth_authorize_vnode(cred, KAUTH_ACCESS_ACTION(accmode,
 	    vp->v_type, ip->meta.mode & ALLPERMS), vp, NULL,
-	    genfs_can_access(vp, cred, hammer2_to_unix_xid(&ip->meta.uid),
-	    hammer2_to_unix_xid(&ip->meta.gid), ip->meta.mode & ALLPERMS,
+	    genfs_can_access(vp, cred, hammer2_inode_to_uid(ip),
+	    hammer2_inode_to_gid(ip), ip->meta.mode & ALLPERMS,
 	    NULL, accmode)));
 }
 
@@ -300,8 +300,8 @@ hammer2_getattr(void *v)
 	vap->va_fileid = ip->meta.inum;
 	vap->va_mode = ip->meta.mode & ~S_IFMT;
 	vap->va_nlink = ip->meta.nlinks;
-	vap->va_uid = hammer2_to_unix_xid(&ip->meta.uid);
-	vap->va_gid = hammer2_to_unix_xid(&ip->meta.gid);
+	vap->va_uid = hammer2_inode_to_uid(ip);
+	vap->va_gid = hammer2_inode_to_gid(ip);
 	vap->va_rdev = NODEV;
 	vap->va_size = ip->meta.size;
 	vap->va_flags = ip->meta.uflags;
@@ -335,15 +335,16 @@ hammer2_chown(struct vnode *vp, uid_t uid, gid_t gid, kauth_cred_t cred)
 {
 	hammer2_inode_t *ip = VTOI(vp);
 	struct uuid uuid_uid, uuid_gid;
-	uid_t ouid, ogid;
+	uid_t ouid;
+	gid_t ogid;
 	uint64_t ctime;
 	uint32_t imode;
 	int error;
 
 	hammer2_mtx_assert_ex(&ip->lock);
 
-	ouid = hammer2_to_unix_xid(&ip->meta.uid);
-	ogid = hammer2_to_unix_xid(&ip->meta.gid);
+	ouid = hammer2_inode_to_uid(ip);
+	ogid = hammer2_inode_to_gid(ip);
 
 	if (uid == (uid_t)VNOVAL)
 		uid = ouid;
@@ -394,9 +395,8 @@ hammer2_chmod(struct vnode *vp, mode_t mode, kauth_cred_t cred)
 	hammer2_mtx_assert_ex(&ip->lock);
 
 	error = kauth_authorize_vnode(cred, KAUTH_VNODE_WRITE_SECURITY,
-	    vp, NULL, genfs_can_chmod(vp, cred,
-	    hammer2_to_unix_xid(&ip->meta.uid),
-	    hammer2_to_unix_xid(&ip->meta.gid), mode));
+	    vp, NULL, genfs_can_chmod(vp, cred, hammer2_inode_to_uid(ip),
+	    hammer2_inode_to_gid(ip), mode));
 	if (error)
 		return (error);
 
@@ -464,8 +464,8 @@ hammer2_setattr(void *v)
 			goto done;
 		}
 		error = kauth_authorize_vnode(cred, KAUTH_VNODE_WRITE_FLAGS, vp,
-		    NULL, genfs_can_chflags(vp, cred,
-		    hammer2_to_unix_xid(&ip->meta.uid), false));
+		    NULL, genfs_can_chflags(vp, cred, hammer2_inode_to_uid(ip),
+		    false));
 		if (error)
 			goto done;
 		if (ip->meta.uflags != vap->va_flags) {
@@ -539,8 +539,8 @@ hammer2_setattr(void *v)
 			goto done;
 		}
 		error = kauth_authorize_vnode(cred, KAUTH_VNODE_WRITE_TIMES, vp,
-		    NULL, genfs_can_chtimes(vp, cred,
-		    hammer2_to_unix_xid(&ip->meta.uid), vap->va_vaflags));
+		    NULL, genfs_can_chtimes(vp, cred, hammer2_inode_to_uid(ip),
+		    vap->va_vaflags));
 		if (error)
 			goto done;
 		hammer2_inode_modify(ip);
@@ -1313,7 +1313,7 @@ hammer2_bmap(void *v)
 }
 
 static int
-hammer2_nresolve(void *v)
+hammer2_lookup(void *v)
 {
 	struct vop_lookup_v2_args /* {
 		struct vnode *a_dvp;
@@ -1415,8 +1415,8 @@ hammer2_nresolve(void *v)
 				 */
 				if (kauth_authorize_vnode(cred, KAUTH_VNODE_DELETE,
 				    vp, dvp, genfs_can_sticky(dvp, cred,
-				    hammer2_to_unix_xid(&dip->meta.uid),
-				    hammer2_to_unix_xid(&ip->meta.uid)))) {
+				    hammer2_inode_to_uid(dip),
+				    hammer2_inode_to_uid(ip)))) {
 					error = EPERM;
 					vput(vp);
 					hammer2_inode_unlock(ip);
@@ -1903,6 +1903,31 @@ hammer2_remove(void *v)
 	return (error);
 }
 
+/*
+ * hammer2_rename: The hairiest vop, with the insanest API.
+ *
+ * Arguments:
+ *
+ * . fdvp (from directory vnode),
+ * . fvp (from vnode),
+ * . fcnp (from component name),
+ * . tdvp (to directory vnode),
+ * . tvp (to vnode, or NULL), and
+ * . tcnp (to component name).
+ *
+ * Any pair of vnode parameters may have the same vnode.
+ *
+ * On entry,
+ *
+ * . fdvp, fvp, tdvp, and tvp are referenced,
+ * . fdvp and fvp are unlocked, and
+ * . tdvp and tvp (if nonnull) are locked.
+ *
+ * On exit,
+ *
+ * . fdvp, fvp, tdvp, and tvp (if nonnull) are unreferenced, and
+ * . tdvp and tvp are unlocked.
+ */
 static int
 hammer2_rename(void *v)
 {
@@ -1923,7 +1948,7 @@ hammer2_rename(void *v)
 	hammer2_inode_t *fdip = VTOI(fdvp); /* source directory */
 	hammer2_inode_t *fip = VTOI(fvp); /* file being renamed */
 	hammer2_inode_t *tdip = VTOI(tdvp); /* target directory */
-	hammer2_inode_t *tip; /* replaced target during rename or NULL */
+	hammer2_inode_t *tip = tvp ? VTOI(tvp) : NULL; /* replaced target during rename */
 	hammer2_inode_t *ip1, *ip2, *ip3, *ip4;
 	hammer2_xop_scanlhc_t *sxop;
 	hammer2_xop_nrename_t *xop4;
@@ -1947,7 +1972,7 @@ hammer2_rename(void *v)
 		goto abortit;
 	}
 
-	if (tvp && ((VTOI(tvp)->meta.uflags & (IMMUTABLE | APPEND)) ||
+	if (tip && ((tip->meta.uflags & (IMMUTABLE | APPEND)) ||
 	    (tdip->meta.uflags & APPEND))) {
 		error = EPERM;
 		goto abortit;
@@ -1995,11 +2020,26 @@ hammer2_rename(void *v)
 	 * directory hierarchy above the target, as this would
 	 * orphan everything below the source directory. Also
 	 * the user must have write permission in the source so
-	 * as to be able to change "..". We must repeat the call
-	 * to namei, as the parent directory is unlocked by the
-	 * call to checkpath().
+	 * as to be able to change "..".
 	 */
-	/* XXX DragonFly does this in VFS. */
+	/* DragonFly does this in VFS. */
+	if (fip->meta.type == HAMMER2_OBJTYPE_DIRECTORY &&
+	    fdip->meta.inum != tdip->meta.inum) {
+		error = VOP_ACCESS(fvp, VWRITE, tcnp->cn_cred);
+		if (error) {
+			if (fdvp != tdvp)
+				VOP_UNLOCK(fdvp);
+			VOP_UNLOCK(fvp);
+			goto abortit;
+		}
+		error = hammer2_checkpath(fip, tdip);
+		if (error) {
+			if (fdvp != tdvp)
+				VOP_UNLOCK(fdvp);
+			VOP_UNLOCK(fvp);
+			goto abortit;
+		}
+	}
 
 	hammer2_trans_init(tdip->pmp, 0);
 	hammer2_inode_ref(fip); /* extra ref */
@@ -2010,7 +2050,6 @@ hammer2_rename(void *v)
 	 * temporarily, the operating system is expected to protect
 	 * against rename races.
 	 */
-	tip = tvp ? VTOI(tvp) : NULL;
 	if (tip)
 		hammer2_inode_ref(tip); /* extra ref */
 
@@ -2151,7 +2190,8 @@ done2:
 	hammer2_inode_drop(fip);
 	hammer2_trans_done(tdip->pmp, HAMMER2_TRANS_SIDEQ);
 
-	genfs_rename_cache_purge(fdvp, fvp, tdvp, tvp);
+	if (error == 0)
+		genfs_rename_cache_purge(fdvp, fvp, tdvp, tvp);
 
 	if (fdvp != tdvp)
 		vput(fdvp);
@@ -2386,11 +2426,6 @@ hammer2_open(void *v)
 	return (0);
 }
 
-static void
-hammer2_itimes_locked(struct vnode *vp)
-{
-}
-
 static int
 hammer2_close(void *v)
 {
@@ -2399,12 +2434,9 @@ hammer2_close(void *v)
 		int a_fflag;
 		kauth_cred_t a_cred;
 	} */ *ap = v;
-	struct vnode *vp = ap->a_vp;
+	struct vnode *vp __diagused = ap->a_vp;
 
 	KASSERT(VOP_ISLOCKED(vp));
-
-	if (vrefcnt(vp) > 1)
-		hammer2_itimes_locked(vp);
 
 	return (0);
 }
@@ -2547,7 +2579,7 @@ int (**hammer2_vnodeop_p)(void *);
 static const struct vnodeopv_entry_desc hammer2_vnodeop_entries[] = {
 	{ &vop_default_desc, vn_default_error },
 	{ &vop_parsepath_desc, genfs_parsepath },	/* parsepath */
-	{ &vop_lookup_desc, hammer2_nresolve },		/* lookup */
+	{ &vop_lookup_desc, hammer2_lookup },		/* lookup */
 	{ &vop_create_desc, hammer2_create },		/* create */
 	{ &vop_mknod_desc, hammer2_mknod },		/* mknod */
 	{ &vop_open_desc, hammer2_open },		/* open */

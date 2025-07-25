@@ -212,11 +212,11 @@ hammer2_chain_init(hammer2_chain_t *chain)
 	 * To prevent this, logical vnode is changed to not use bdwrite.
 	 */
 	RB_INIT(&chain->core.rbtree);
-	hammer2_mtx_init(&chain->lock, "h2ch_lk"); /* XXX chlock */
-	hammer2_mtx_init(&chain->diolk, "h2ch_dlk");
-	hammer2_lk_init(&chain->inp_lock, "h2ch_inplk");
-	hammer2_lkc_init(&chain->inp_cv, "h2ch_inplkc");
-	hammer2_spin_init(&chain->core.spin, "h2ch_cosp");
+	hammer2_mtx_init(&chain->lock, "h2ch"); /* XXX chlock */
+	hammer2_mtx_init(&chain->diolk, "h2ch_dio");
+	hammer2_lk_init(&chain->inp_lock, "h2ch_inp");
+	hammer2_lkc_init(&chain->inp_cv, "h2ch_inp_cv");
+	hammer2_spin_init(&chain->core.spin, "h2ch_core");
 }
 
 /*
@@ -1954,7 +1954,7 @@ hammer2_chain_repparent(hammer2_chain_t **chainp, int flags)
 	 * This reptrack structure 'owns' the parent ref and will automatically
 	 * migrate to the parent's parent if the parent is deleted permanently.
 	 */
-	hammer2_spin_init(&reptrack.spin, "h2reptrk");
+	hammer2_spin_init(&reptrack.spin, "h2_rep");
 	reptrack.chain = parent;
 	hammer2_chain_ref(parent); /* for the reptrack */
 
